@@ -67,6 +67,9 @@ impl<C: Config> ActionRunner<C> {
         let source_account = App::<C>::account_basic(ctx, &source);
 
         if let Some(nonce) = nonce {
+            if source_account.nonce != nonce {
+                println!("source_account: {:?}", source);
+            }
             ensure!(
                 source_account.nonce == nonce,
                 format!(
