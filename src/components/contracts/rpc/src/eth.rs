@@ -573,7 +573,7 @@ impl EthApi for EthApiImpl {
     fn estimate_gas(
         &self,
         request: CallRequest,
-        _: Option<BlockNumber>,
+        number: Option<BlockNumber>,
     ) -> Result<U256> {
         debug!(target: "eth_rpc", "estimate_gas, request:{:?}", request);
 
@@ -594,10 +594,11 @@ impl EthApi for EthApiImpl {
         let mut config = <BaseApp as module_ethereum::Config>::config().clone();
         config.estimate = true;
 
+        let height = self.block_number_to_height(number)?;
         let mut ctx = self
             .account_base_app
             .read()
-            .create_query_context(None, false)
+            .create_query_context(height, false)
             .map_err(|err| {
                 internal_err(format!("create query context error: {:?}", err))
             })?;
