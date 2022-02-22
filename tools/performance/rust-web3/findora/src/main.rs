@@ -1,33 +1,29 @@
 use clap::{Parser, Subcommand};
-use std::ops::Mul;
+use std::ops::{Mul, MulAssign};
 use std::str::FromStr;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
-    thread,
 };
 
-use feth::{one_eth_key, KeyPair, TestClient, TransferMetrics, BLOCK_TIME, ROOT_ADDR};
+use feth::{one_eth_key, utils::*, KeyPair, TestClient, BLOCK_TIME, ROOT_ADDR};
+use rayon::prelude::*;
 use web3::types::Address;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Cli {
     /// The minimum parallelism
-    #[clap(long, default_value_t = 10)]
+    #[clap(long, default_value_t = 1)]
     min_parallelism: u64,
 
     /// The maximum parallelism
-    #[clap(long, default_value_t = 2000)]
+    #[clap(long, default_value_t = 200)]
     max_parallelism: u64,
 
     /// The count of transactions sent by a routine
-    #[clap(long, default_value_t = 20)]
+    #[clap(long, default_value_t = 0)]
     count: u64,
-
-    /// load source accounts from file, or generate new accounts
-    #[clap(long)]
-    load: bool,
 
     /// the source account file
     #[clap(long, parse(from_os_str), value_name = "FILE", default_value = "source_keys.001")]
@@ -37,6 +33,10 @@ struct Cli {
     #[clap(long, default_value_t = BLOCK_TIME)]
     block_time: u64,
 
+    /// findora network fullnode urls: http://path:8545,http://path1:8546
+    #[clap(long)]
+    network: Option<String>,
+
     #[clap(subcommand)]
     command: Option<Commands>,
 }
@@ -45,164 +45,228 @@ struct Cli {
 enum Commands {
     /// Fund Ethereum accounts
     Fund {
-        /// the number of Eth Account to te fund
+        /// ethereum-compatible network
         #[clap(long)]
+        network: String,
+
+        /// block time of the network
+        #[clap(long, default_value_t = BLOCK_TIME)]
+        block_time: u64,
+
+        /// the number of Eth Account to be fund
+        #[clap(long, default_value_t = 0)]
         count: u64,
-        /// fund amount
+
+        /// how much 0.1-eth to fund
+        #[clap(long, default_value_t = 1)]
+        amount: u64,
+
+        /// load keys from file
         #[clap(long)]
-        amount: Option<u64>,
+        load: bool,
     },
 }
 
-fn show_usage(prog: &str) {
-    println!("{} help", prog);
-    println!("{} load_source NumberPerAccount", prog);
-    println!("{} SourceAccountNumber NumberPerAccount", prog);
+fn check_parallel_args(max_par: u64, min_par: u64) {
+    if max_par > log_cpus() * 100 {
+        panic!(
+            "Two much working thread, maybe overload the system {}/{}",
+            max_par,
+            log_cpus(),
+        )
+    }
+    if max_par < min_par || min_par == 0 || max_par == 0 {
+        panic!("Invalid parallel parameters: max {}, min {}", max_par, min_par);
+    }
+}
+
+fn calc_pool_size(keys: usize, max_par: usize, min_par: usize) -> usize {
+    let mut max_pool_size = keys * 2;
+    if max_pool_size > max_par {
+        max_pool_size = max_par;
+    }
+    if max_pool_size < min_par {
+        max_pool_size = min_par;
+    }
+
+    max_pool_size
+}
+
+fn fund_accounts(network: &str, block_time: u64, mut count: u64, am: u64, load: bool) {
+    let mut amount = web3::types::U256::exp10(17); // 0.1 eth
+    amount.mul_assign(am);
+
+    let network = real_network(network);
+    // use first endpoint to fund accounts
+    let client = TestClient::setup(network[0].clone(), None, None);
+    let balance = client.balance(ROOT_ADDR[2..].parse().unwrap(), None);
+    println!("Root Balance: {}", balance);
+
+    let source_keys = if load {
+        let keys: Vec<_> = serde_json::from_str(std::fs::read_to_string("source_keys.001").unwrap().as_str()).unwrap();
+        count = keys.len() as u64;
+        keys
+    } else {
+        // check if the key file exists
+        println!("generating new source keys");
+        if std::fs::File::open("source_keys.001").is_ok() {
+            panic!("file \"source_keys.001\" already exists");
+        }
+        if amount.mul(count + 1) >= balance {
+            panic!("Too large source account number, maximum {}", balance / amount);
+        }
+        let source_keys = (0..count).map(|_| one_eth_key()).collect::<Vec<_>>();
+        let data = serde_json::to_string(&source_keys).unwrap();
+        std::fs::write("source_keys.001", &data).unwrap();
+
+        source_keys
+    };
+
+    let source_accounts = source_keys.iter().map(|key| key.address.as_str()).collect::<Vec<_>>();
+    // 1000 eth
+    let amounts = vec![amount; count as usize];
+    let metrics = client
+        .distribution(None, &source_accounts, &amounts, &Some(block_time))
+        .unwrap()
+        .0;
+    // save metrics to file
+    let data = serde_json::to_string(&metrics).unwrap();
+    std::fs::write("metrics.001", &data).unwrap();
 }
 
 fn main() -> web3::Result<()> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
 
-    let mut per_count = 10;
-    let mut source_count = 5;
-    let mut prog = "feth".to_owned();
-    let mut source_keys = None;
-    let mut metrics = None;
-    let mut block_time = None;
-    for (i, arg) in std::env::args().enumerate() {
-        if i == 0 {
-            prog = arg;
-        } else if i == 1 {
-            if arg.as_str() == "help" {
-                show_usage(prog.as_str());
-                return Ok(());
-            } else if arg.as_str() == "load_source" {
-                println!("loading from \"source_keys.001\"");
-                let keys: Vec<KeyPair> =
-                    serde_json::from_str(std::fs::read_to_string("source_keys.001").unwrap().as_str()).unwrap();
-                source_count = keys.len();
-                source_keys = Some(keys);
-            } else {
-                source_count = arg.parse::<usize>().unwrap_or(source_count);
-            }
-        } else if i == 2 {
-            per_count = arg.parse::<usize>().unwrap_or(per_count);
-        } else if i == 3 {
-            block_time = Some(arg.parse::<u64>().unwrap_or(BLOCK_TIME));
+    println!("{:?}", cli);
+
+    match &cli.command {
+        Some(Commands::Fund {
+            network,
+            block_time,
+            count,
+            amount,
+            load,
+        }) => {
+            fund_accounts(network.as_ref(), *block_time, *count, *amount, *load);
+            return Ok(());
         }
+        None => {}
     }
-    let source_amount = web3::types::U256::exp10(18 + 3); // 1000 eth
+
+    let per_count = cli.count;
+    let min_par = cli.min_parallelism;
+    let max_par = cli.max_parallelism;
+    let source_file = cli.source;
+    let _prog = "feth".to_owned();
+    let block_time = Some(cli.block_time);
+    let source_keys: Vec<KeyPair> =
+        serde_json::from_str(std::fs::read_to_string(source_file).unwrap().as_str()).unwrap();
     let target_amount = web3::types::U256::exp10(17); // 0.1 eth
 
-    let client = TestClient::setup(None, None, None);
+    println!("logical cpus {}, physical cpus {}", log_cpus(), phy_cpus());
+    check_parallel_args(max_par, min_par);
+
+    let max_pool_size = calc_pool_size(source_keys.len(), max_par as usize, min_par as usize);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(max_pool_size)
+        .build_global()
+        .unwrap();
+    println!("thread pool size {}", max_pool_size);
+
+    let networks = cli.network.map(|n| real_network(n.as_str()));
+    let clients = if let Some(endpoints) = networks {
+        endpoints
+            .into_iter()
+            .map(|n| Arc::new(TestClient::setup(n, None, None)))
+            .collect::<Vec<_>>()
+    } else {
+        vec![Arc::new(TestClient::setup(None, None, None))]
+    };
+    let client = clients[0].clone();
 
     println!("chain_id:     {}", client.chain_id().unwrap());
     println!("gas_price:    {}", client.gas_price().unwrap());
     println!("block_number: {}", client.block_number().unwrap());
     println!("frc20 code:   {:?}", client.frc20_code().unwrap());
-    let balance = client.balance(ROOT_ADDR[2..].parse().unwrap(), None);
-    println!("Root Balance: {}", balance);
 
-    let source_keys = source_keys.unwrap_or_else(|| {
-        if std::fs::File::open("source_keys.001").is_ok() {
-            panic!("file \"source_keys.001\" already exists");
-        }
-        if source_amount.mul(source_count + 1) >= balance {
-            panic!("Too large source account number, maximum {}", balance / source_amount);
-        }
-        let source_keys = (0..source_count).map(|_| one_eth_key()).collect::<Vec<_>>();
-        let data = serde_json::to_string(&source_keys).unwrap();
-        std::fs::write("source_keys.001", &data).unwrap();
+    let source_keys = source_keys
+        .par_iter()
+        .filter_map(|kp| {
+            let balance = client.balance(kp.address[2..].parse().unwrap(), None);
+            if balance <= target_amount.mul(per_count) {
+                None
+            } else {
+                Some(kp)
+            }
+        })
+        .collect::<Vec<_>>();
 
-        let source_accounts = source_keys.iter().map(|key| key.address.as_str()).collect::<Vec<_>>();
-        // 1000 eth
-        let amounts = vec![source_amount; source_count];
-        metrics = Some(
-            client
-                .distribution(None, &source_accounts, &amounts, block_time)
-                .unwrap()
-                .0,
-        );
-        // save metrics to file
-        let data = serde_json::to_string(&metrics).unwrap();
-        std::fs::write("metrics.001", &data).unwrap();
-
-        source_keys
-    });
-    let metrics = metrics.unwrap_or_else(|| {
-        source_keys
-            .iter()
-            .filter_map(|kp| {
-                let balance = client.balance(kp.address[2..].parse().unwrap(), None);
-                if balance <= target_amount.mul(per_count) {
-                    None
-                } else {
-                    Some(TransferMetrics {
-                        from: client.root_addr,
-                        to: Default::default(),
-                        amount: balance,
-                        hash: None,
-                        status: 1,
-                        wait: 0,
-                    })
-                }
-            })
-            .collect::<Vec<_>>()
-    });
-
-    if source_count == 0 || per_count == 0 || metrics.is_empty() {
+    if min_par == 0 || per_count == 0 || source_keys.is_empty() {
+        println!("Not enough sufficient source accounts or target accounts, skipped.");
         return Ok(());
     }
 
-    let client = Arc::new(client);
-    let mut handles = vec![];
     let total_succeed = Arc::new(Mutex::new(0u64));
+    let _concurrences = if source_keys.len() > max_pool_size {
+        max_pool_size
+    } else {
+        source_keys.len()
+    };
     let now = std::time::Instant::now();
 
-    metrics.into_iter().enumerate().for_each(|(i, m)| {
-        if m.status == 1 {
-            let client = client.clone();
-            let target_count = per_count;
-            let keys = (0..target_count).map(|_| one_eth_key()).collect::<Vec<_>>();
-            let am = target_amount;
-            let source = source_keys.get(i).map(|s| {
-                (
-                    secp256k1::SecretKey::from_str(s.private.as_str()).unwrap(),
-                    Address::from_str(s.address.as_str()).unwrap(),
-                )
-            });
-            let total_succeed = total_succeed.clone();
-
-            let handle = thread::spawn(move || {
-                let amounts = vec![am; target_count];
-                let accounts = keys.iter().map(|key| key.address.as_str()).collect::<Vec<_>>();
-                let (metrics, succeed) = client.distribution(source, &accounts, &amounts, block_time).unwrap();
-                let file = format!("metrics.target.{}", i);
-                let data = serde_json::to_string(&metrics).unwrap();
-                std::fs::write(file, data).unwrap();
-
-                let mut num = total_succeed.lock().unwrap();
-                *num += succeed;
-            });
-            handles.push(handle);
-        }
-    });
-
-    source_count = handles.len();
-    for h in handles {
-        h.join().unwrap();
+    // split the source keys
+    let mut chunk_size = source_keys.len() / clients.len();
+    if source_keys.len() % clients.len() != 0 {
+        chunk_size += 1;
     }
 
-    let elapsed = now.elapsed().as_secs();
-    let avg = source_count as f64 * per_count as f64 / elapsed as f64;
-    println!(
-        "Transfer from {} accounts to {} accounts concurrently, succeed {}, {:.3} Transfer/s, total {} seconds",
-        source_count,
-        per_count,
-        total_succeed.lock().unwrap(),
-        avg,
-        elapsed,
-    );
+    source_keys
+        .par_chunks(chunk_size)
+        .zip(clients)
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(chunk, (key_pairs, client))| {
+            let handles = key_pairs
+                .into_par_iter()
+                .enumerate()
+                .map(|(i, &m)| {
+                    let client = client.clone();
+                    let target_count = per_count;
+                    let keys = (0..target_count).map(|_| one_eth_key()).collect::<Vec<_>>();
+                    let am = target_amount;
+                    let source = (
+                        secp256k1::SecretKey::from_str(m.private.as_str()).unwrap(),
+                        Address::from_str(m.address.as_str()).unwrap(),
+                    );
+                    let total_succeed = total_succeed.clone();
+
+                    let amounts = vec![am; target_count as usize];
+                    let accounts = keys.iter().map(|key| key.address.as_str()).collect::<Vec<_>>();
+                    let (metrics, succeed) = client
+                        .distribution(Some(source), &accounts, &amounts, &block_time)
+                        .unwrap();
+                    let file = format!("metrics.target.{}.{}", chunk, i);
+                    let data = serde_json::to_string(&metrics).unwrap();
+                    std::fs::write(file, data).unwrap();
+
+                    let mut num = total_succeed.lock().unwrap();
+                    *num += succeed;
+                    succeed
+                })
+                .collect::<Vec<_>>();
+
+            let _total = handles.iter().sum::<u64>();
+        });
+
+    let _elapsed = now.elapsed().as_secs();
+    //println!(
+    //    "Performed {} transfers, max concurrences {}, succeed {}, {:.3} Transfer/s, total {} seconds",
+    //    total,
+    //    concurrences,
+    //    total_succeed.lock().unwrap(),
+    //    avg,
+    //    elapsed,
+    //);
 
     Ok(())
 }

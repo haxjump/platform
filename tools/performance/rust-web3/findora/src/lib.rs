@@ -1,3 +1,5 @@
+pub mod utils;
+
 use bip0039::{Count, Language, Mnemonic};
 use bip32::{DerivationPath, XPrv};
 use libsecp256k1::{PublicKey, SecretKey};
@@ -60,6 +62,7 @@ pub struct TransferMetrics {
     pub wait: u64,          // seconds for waiting tx receipt
 }
 
+#[derive(Debug)]
 pub struct TestClient {
     pub web3: Arc<web3::Web3<Http>>,
     pub root_sk: secp256k1::SecretKey,
@@ -68,8 +71,8 @@ pub struct TestClient {
 }
 
 impl TestClient {
-    pub fn setup(url: Option<&str>, root_sk: Option<&str>, root_addr: Option<&str>) -> Self {
-        let transport = web3::transports::Http::new(url.unwrap_or(WEB3_SRV)).unwrap();
+    pub fn setup(url: Option<String>, root_sk: Option<&str>, root_addr: Option<&str>) -> Self {
+        let transport = web3::transports::Http::new(url.unwrap_or_else(|| WEB3_SRV.to_string()).as_str()).unwrap();
         let web3 = Arc::new(web3::Web3::new(transport));
         let root_sk = secp256k1::SecretKey::from_str(root_sk.unwrap_or(ROOT_SK)).unwrap();
         let root_addr = Address::from_str(root_addr.unwrap_or(ROOT_ADDR)).unwrap();
@@ -131,7 +134,7 @@ impl TestClient {
         source: Option<(secp256k1::SecretKey, Address)>,
         accounts: &[&str],
         amounts: &[U256],
-        block_time: Option<u64>,
+        block_time: &Option<u64>,
     ) -> web3::Result<(Vec<TransferMetrics>, u64)> {
         let mut results = vec![];
         let mut succeed = 0u64;
