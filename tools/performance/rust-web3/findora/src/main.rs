@@ -122,13 +122,15 @@ fn fund_accounts(network: &str, block_time: u64, mut count: u64, am: u64, load: 
         source_keys
     };
 
-    let source_accounts = source_keys.iter().map(|key| key.address.as_str()).collect::<Vec<_>>();
+    let source_accounts = source_keys
+        .into_iter()
+        .map(|key| Address::from_str(key.address.as_str()).unwrap())
+        .collect::<Vec<_>>();
     // 1000 eth
     let amounts = vec![amount; count as usize];
     let metrics = client
         .distribution(None, &source_accounts, &amounts, &Some(block_time))
-        .unwrap()
-        .0;
+        .unwrap();
     // save metrics to file
     let data = serde_json::to_string(&metrics).unwrap();
     std::fs::write("metrics.001", &data).unwrap();
@@ -189,6 +191,7 @@ fn main() -> web3::Result<()> {
     println!("block_number: {}", client.block_number().unwrap());
     println!("frc20 code:   {:?}", client.frc20_code().unwrap());
 
+    println!("preparing test data...");
     let source_keys = source_keys
         .par_iter()
         .filter_map(|kp| {
@@ -199,6 +202,18 @@ fn main() -> web3::Result<()> {
                 Some(kp)
             }
         })
+        .map(|m| {
+            (
+                (
+                    secp256k1::SecretKey::from_str(m.private.as_str()).unwrap(),
+                    Address::from_str(m.address.as_str()).unwrap(),
+                ),
+                (0..per_count)
+                    .map(|_| Address::from_str(one_eth_key().address.as_str()).unwrap())
+                    .collect::<Vec<_>>(),
+                vec![target_amount; per_count as usize],
+            )
+        })
         .collect::<Vec<_>>();
 
     if min_par == 0 || per_count == 0 || source_keys.is_empty() {
@@ -207,12 +222,11 @@ fn main() -> web3::Result<()> {
     }
 
     let total_succeed = Arc::new(Mutex::new(0u64));
-    let _concurrences = if source_keys.len() > max_pool_size {
+    let concurrences = if source_keys.len() > max_pool_size {
         max_pool_size
     } else {
         source_keys.len()
     };
-    let now = std::time::Instant::now();
 
     // split the source keys
     let mut chunk_size = source_keys.len() / clients.len();
@@ -220,53 +234,61 @@ fn main() -> web3::Result<()> {
         chunk_size += 1;
     }
 
-    source_keys
+    // one-thread per source key
+    // fix one source key to one endpoint
+    // channel1 {endpoint, from, tx_hash}: tx_sender -> tx_producer
+    // channel2 {endpoint, from, target}: tx_producer -> tx_sender
+    // tx_producer: check previous tx hash, create tx, send to channel2
+    // tx_sender: send tx, send tx hash to channel1
+
+    println!("starting tests...");
+    let total = source_keys.len() * per_count as usize;
+    let now = std::time::Instant::now();
+    let metrics = source_keys
         .par_chunks(chunk_size)
         .zip(clients)
         .into_par_iter()
         .enumerate()
-        .for_each(|(chunk, (key_pairs, client))| {
-            let handles = key_pairs
+        .map(|(chunk, (sources, client))| {
+            sources
                 .into_par_iter()
                 .enumerate()
-                .map(|(i, &m)| {
-                    let client = client.clone();
-                    let target_count = per_count;
-                    let keys = (0..target_count).map(|_| one_eth_key()).collect::<Vec<_>>();
-                    let am = target_amount;
-                    let source = (
-                        secp256k1::SecretKey::from_str(m.private.as_str()).unwrap(),
-                        Address::from_str(m.address.as_str()).unwrap(),
-                    );
-                    let total_succeed = total_succeed.clone();
-
-                    let amounts = vec![am; target_count as usize];
-                    let accounts = keys.iter().map(|key| key.address.as_str()).collect::<Vec<_>>();
-                    let (metrics, succeed) = client
-                        .distribution(Some(source), &accounts, &amounts, &block_time)
+                .map(|(i, (source, accounts, amounts))| {
+                    let metrics = client
+                        .distribution(Some(*source), accounts, amounts, &block_time)
                         .unwrap();
-                    let file = format!("metrics.target.{}.{}", chunk, i);
-                    let data = serde_json::to_string(&metrics).unwrap();
-                    std::fs::write(file, data).unwrap();
+                    //let file = format!("metrics.target.{}.{}", chunk, i);
+                    //let data = serde_json::to_string(&metrics).unwrap();
+                    //std::fs::write(&file, data).unwrap();
 
                     let mut num = total_succeed.lock().unwrap();
-                    *num += succeed;
-                    succeed
+                    *num += metrics.succeed;
+                    (chunk, i, metrics)
                 })
-                .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
 
-            let _total = handles.iter().sum::<u64>();
-        });
+    let elapsed = now.elapsed().as_secs();
 
-    let _elapsed = now.elapsed().as_secs();
-    //println!(
-    //    "Performed {} transfers, max concurrences {}, succeed {}, {:.3} Transfer/s, total {} seconds",
-    //    total,
-    //    concurrences,
-    //    total_succeed.lock().unwrap(),
-    //    avg,
-    //    elapsed,
-    //);
+    println!("saving test files");
+    metrics.into_iter().for_each(|m| {
+        m.into_iter().for_each(|(chunk, i, metrics)| {
+            let file = format!("metrics.target.{}.{}", chunk, i);
+            let data = serde_json::to_string(&metrics).unwrap();
+            std::fs::write(&file, data).unwrap();
+        })
+    });
+
+    let avg = total as f64 / elapsed as f64;
+    println!(
+        "Performed {} transfers, max concurrences {}, succeed {}, {:.3} Transfer/s, total {} seconds",
+        total,
+        concurrences,
+        total_succeed.lock().unwrap(),
+        avg,
+        elapsed,
+    );
 
     Ok(())
 }

@@ -9,6 +9,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use web3::api::Net;
+use web3::futures::TryFutureExt;
 use web3::{
     transports::Http,
     types::{
@@ -34,6 +36,7 @@ pub struct KeyPair {
     pub private: String,
 }
 
+#[inline(always)]
 pub fn one_eth_key() -> KeyPair {
     let mnemonic = Mnemonic::generate_in(Language::English, Count::Words12);
     let bs = mnemonic.to_seed("");
@@ -53,13 +56,20 @@ pub fn one_eth_key() -> KeyPair {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TransferMetrics {
-    pub from: Address,
+pub struct TxMetric {
     pub to: Address,
     pub amount: U256,
     pub hash: Option<H256>, // Tx hash
     pub status: u64,        // 1 - success, 0 - fail
     pub wait: u64,          // seconds for waiting tx receipt
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransferMetrics {
+    pub from: Address,
+    pub total: u64,
+    pub succeed: u64,
+    pub txs: Vec<TxMetric>,
 }
 
 #[derive(Debug)]
@@ -68,6 +78,14 @@ pub struct TestClient {
     pub root_sk: secp256k1::SecretKey,
     pub root_addr: Address,
     rt: Runtime,
+}
+
+#[derive(Debug)]
+pub struct NetworkInfo {
+    pub chain_id: U256,
+    pub block_number: U64,
+    pub gas_price: U256,
+    pub frc20_code: Option<Bytes>,
 }
 
 impl TestClient {
@@ -95,6 +113,10 @@ impl TestClient {
 
     pub fn block_number(&self) -> Option<U64> {
         self.rt.block_on(self.web3.eth().block_number()).ok()
+    }
+
+    pub fn nonce(&self, from: Address) -> Option<U256> {
+        self.rt.block_on(self.web3.eth().transaction_count(from, None)).ok()
     }
 
     pub fn gas_price(&self) -> Option<U256> {
@@ -132,10 +154,10 @@ impl TestClient {
     pub fn distribution(
         &self,
         source: Option<(secp256k1::SecretKey, Address)>,
-        accounts: &[&str],
+        accounts: &[Address],
         amounts: &[U256],
         block_time: &Option<u64>,
-    ) -> web3::Result<(Vec<TransferMetrics>, u64)> {
+    ) -> web3::Result<TransferMetrics> {
         let mut results = vec![];
         let mut succeed = 0u64;
         let mut idx = 1u64;
@@ -146,10 +168,9 @@ impl TestClient {
         accounts
             .iter()
             .zip(amounts)
-            .map(|(&account, &am)| {
-                let to = Some(Address::from_str(account).unwrap());
-                let tm = TransferMetrics {
-                    from: source_address,
+            .map(|(account, &am)| {
+                let to = Some(*account);
+                let tm = TxMetric {
                     to: to.unwrap(),
                     amount: am,
                     ..Default::default()
@@ -201,6 +222,11 @@ impl TestClient {
 
         println!("Tx succeeded: {}/{}", succeed, total);
 
-        Ok((results, succeed))
+        Ok(TransferMetrics {
+            from: source_address,
+            total: accounts.len() as u64,
+            succeed,
+            txs: results,
+        })
     }
 }
