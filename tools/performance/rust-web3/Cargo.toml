@@ -3,3 +3,6 @@ members = [
 "findora",
 "web3"
 ]
+
+[profile.release]
+strip = "debuginfo"

@@ -1,5 +1,6 @@
 pub mod utils;
 
+use crate::utils::extract_keypair_from_file;
 use bip0039::{Count, Language, Mnemonic};
 use bip32::{DerivationPath, XPrv};
 use libsecp256k1::{PublicKey, SecretKey};
@@ -9,8 +10,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use web3::api::Net;
-use web3::futures::TryFutureExt;
 use web3::{
     transports::Http,
     types::{
@@ -26,9 +25,6 @@ pub const BLOCK_TIME: u64 = 16;
 //const WEB3_SRV: &str = "http://18.236.205.22:8545";
 const WEB3_SRV: &str = "https://prod-testnet.prod.findora.org:8545";
 //const WEB3_SRV: &str = "https://dev-mainnetmock.dev.findora.org:8545";
-
-pub const ROOT_SK: &str = "b8836c243a1ff93a63b12384176f102345123050c9f3d3febbb82e3acd6dd1cb";
-pub const ROOT_ADDR: &str = "0xBb4a0755b740a55Bf18Ac4404628A1a6ae8B6F8F";
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct KeyPair {
@@ -89,11 +85,10 @@ pub struct NetworkInfo {
 }
 
 impl TestClient {
-    pub fn setup(url: Option<String>, root_sk: Option<&str>, root_addr: Option<&str>) -> Self {
+    pub fn setup(url: Option<String>) -> Self {
         let transport = web3::transports::Http::new(url.unwrap_or_else(|| WEB3_SRV.to_string()).as_str()).unwrap();
         let web3 = Arc::new(web3::Web3::new(transport));
-        let root_sk = secp256k1::SecretKey::from_str(root_sk.unwrap_or(ROOT_SK)).unwrap();
-        let root_addr = Address::from_str(root_addr.unwrap_or(ROOT_ADDR)).unwrap();
+        let (root_sk, root_addr) = extract_keypair_from_file(".secret");
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -173,6 +168,7 @@ impl TestClient {
                 let tm = TxMetric {
                     to: to.unwrap(),
                     amount: am,
+                    status: 99,
                     ..Default::default()
                 };
                 let tp = TransactionParameters {
@@ -213,7 +209,11 @@ impl TestClient {
                                 }
                             }
                         }
+                    } else {
+                        metric.status = 97;
                     }
+                } else {
+                    metric.status = 98;
                 }
                 println!("{}/{} {:?} {}", idx, total, metric.to, metric.status == 1);
                 idx += 1;
