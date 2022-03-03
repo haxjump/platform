@@ -8,7 +8,7 @@ use std::{
 
 use feth::{one_eth_key, utils::*, KeyPair, TestClient, BLOCK_TIME};
 use rayon::prelude::*;
-use web3::types::Address;
+use web3::types::{Address, TransactionId, H256};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
@@ -33,7 +33,7 @@ struct Cli {
     #[clap(long, default_value_t = BLOCK_TIME)]
     block_time: u64,
 
-    /// findora network fullnode urls: http://path:8545,http://path1:8546
+    /// findora network full-node urls: http://node0:8545,http://node1:8545
     #[clap(long)]
     network: Option<String>,
 
@@ -65,9 +65,9 @@ enum Commands {
         #[clap(long)]
         load: bool,
 
-        /// re-fund account with insufficient balance
+        /// re-deposit account with insufficient balance
         #[clap(long)]
-        refund: bool,
+        redeposit: bool,
     },
     /// check ethereum account information
     Info {
@@ -78,6 +78,17 @@ enum Commands {
         /// ethereum address
         #[clap(long)]
         account: Address,
+    },
+
+    /// Transaction Operations
+    Transaction {
+        /// ethereum-compatible network
+        #[clap(long)]
+        network: String,
+
+        /// transaction hash
+        #[clap(long)]
+        hash: H256,
     },
 }
 
@@ -106,16 +117,24 @@ fn calc_pool_size(keys: usize, max_par: usize, min_par: usize) -> usize {
     max_pool_size
 }
 
+fn eth_transaction(network: &str, hash: H256) {
+    let network = real_network(network);
+    // use first endpoint to fund accounts
+    let client = TestClient::setup(network[0].clone());
+    let tx = client.transaction(TransactionId::from(hash));
+    println!("{:?}", tx);
+}
+
 fn eth_account(network: &str, account: Address) {
     let network = real_network(network);
     // use first endpoint to fund accounts
     let client = TestClient::setup(network[0].clone());
     let balance = client.balance(account, None);
-    let nonce = client.nonce(account);
+    let nonce = client.nonce(account, None);
     println!("{:?}: {} {:?}", account, balance, nonce);
 }
 
-fn fund_accounts(network: &str, block_time: u64, mut count: u64, am: u64, load: bool, refund: bool) {
+fn fund_accounts(network: &str, block_time: u64, count: u64, am: u64, load: bool, redeposit: bool) {
     let mut amount = web3::types::U256::exp10(17); // 0.1 eth
     amount.mul_assign(am);
 
@@ -144,7 +163,7 @@ fn fund_accounts(network: &str, block_time: u64, mut count: u64, am: u64, load: 
         source_keys
     };
 
-    // increase source keys and save them to file
+    // add more source keys and save them to file
     if count as usize > source_keys.len() {
         source_keys.resize_with(count as usize, one_eth_key);
 
@@ -152,26 +171,31 @@ fn fund_accounts(network: &str, block_time: u64, mut count: u64, am: u64, load: 
         let data = serde_json::to_string(&source_keys).unwrap();
         std::fs::write("source_keys.001", &data).unwrap();
     }
-    // update count to actual count
-    count = source_keys.len() as u64;
 
+    let total = source_keys.len();
     let source_accounts = source_keys
         .into_iter()
-        .map(|key| Address::from_str(key.address.as_str()).unwrap())
-        .filter(|&from| {
-            if refund {
+        .enumerate()
+        .filter_map(|(idx, key)| {
+            let from = Address::from_str(key.address.as_str()).unwrap();
+            let account = if redeposit {
                 let balance = client.balance(from, None);
-                balance < amount
+                if balance < amount {
+                    Some((from, amount))
+                } else {
+                    None
+                }
             } else {
-                true
+                Some((from, amount))
+            };
+            if let Some(a) = account.as_ref() {
+                println!("{}/{} {:?}", idx, total, a);
             }
+            account
         })
         .collect::<Vec<_>>();
     // 1000 eth
-    let amounts = vec![amount; count as usize];
-    let metrics = client
-        .distribution(None, &source_accounts, &amounts, &Some(block_time))
-        .unwrap();
+    let metrics = client.distribution(None, &source_accounts, &Some(block_time)).unwrap();
     // save metrics to file
     let data = serde_json::to_string(&metrics).unwrap();
     std::fs::write("metrics.001", &data).unwrap();
@@ -189,27 +213,30 @@ fn main() -> web3::Result<()> {
             count,
             amount,
             load,
-            refund,
+            redeposit,
         }) => {
-            fund_accounts(network.as_ref(), *block_time, *count, *amount, *load, *refund);
+            fund_accounts(network.as_ref(), *block_time, *count, *amount, *load, *redeposit);
             return Ok(());
         }
         Some(Commands::Info { network, account }) => {
             eth_account(network.as_ref(), *account);
             return Ok(());
         }
+        Some(Commands::Transaction { network, hash }) => {
+            eth_transaction(network.as_ref(), *hash);
+            return Ok(());
+        }
         None => {}
     }
 
-    let per_count = cli.count;
+    let count = cli.count;
     let min_par = cli.min_parallelism;
     let max_par = cli.max_parallelism;
     let source_file = cli.source;
-    let _prog = "feth".to_owned();
     let block_time = Some(cli.block_time);
     let source_keys: Vec<KeyPair> =
         serde_json::from_str(std::fs::read_to_string(source_file).unwrap().as_str()).unwrap();
-    let target_amount = web3::types::U256::exp10(17); // 0.1 eth
+    let target_amount = web3::types::U256::exp10(16); // 0.01 eth
 
     println!("logical cpus {}, physical cpus {}", log_cpus(), phy_cpus());
     check_parallel_args(max_par, min_par);
@@ -241,28 +268,29 @@ fn main() -> web3::Result<()> {
     let source_keys = source_keys
         .par_iter()
         .filter_map(|kp| {
-            let balance = client.balance(kp.address[2..].parse().unwrap(), None);
-            if balance <= target_amount.mul(per_count) {
+            let (secret, address) = (
+                secp256k1::SecretKey::from_str(kp.private.as_str()).unwrap(),
+                Address::from_str(kp.address.as_str()).unwrap(),
+            );
+            let balance = client.balance(address, None);
+            if balance <= target_amount.mul(count) {
                 None
             } else {
-                Some(kp)
+                let target = (0..count)
+                    .map(|_| {
+                        (
+                            Address::from_str(one_eth_key().address.as_str()).unwrap(),
+                            target_amount,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                println!("account {:?} added to source pool", address);
+                Some(((secret, address), target))
             }
-        })
-        .map(|m| {
-            (
-                (
-                    secp256k1::SecretKey::from_str(m.private.as_str()).unwrap(),
-                    Address::from_str(m.address.as_str()).unwrap(),
-                ),
-                (0..per_count)
-                    .map(|_| Address::from_str(one_eth_key().address.as_str()).unwrap())
-                    .collect::<Vec<_>>(),
-                vec![target_amount; per_count as usize],
-            )
         })
         .collect::<Vec<_>>();
 
-    if min_par == 0 || per_count == 0 || source_keys.is_empty() {
+    if min_par == 0 || count == 0 || source_keys.is_empty() {
         println!("Not enough sufficient source accounts or target accounts, skipped.");
         return Ok(());
     }
@@ -284,7 +312,7 @@ fn main() -> web3::Result<()> {
     // fix one source key to one endpoint
 
     println!("starting tests...");
-    let total = source_keys.len() * per_count as usize;
+    let total = source_keys.len() * count as usize;
     let now = std::time::Instant::now();
     let metrics = source_keys
         .par_chunks(chunk_size)
@@ -295,10 +323,8 @@ fn main() -> web3::Result<()> {
             sources
                 .into_par_iter()
                 .enumerate()
-                .map(|(i, (source, accounts, amounts))| {
-                    let metrics = client
-                        .distribution(Some(*source), accounts, amounts, &block_time)
-                        .unwrap();
+                .map(|(i, (source, targets))| {
+                    let metrics = client.distribution(Some(*source), targets, &block_time).unwrap();
                     let mut num = total_succeed.lock().unwrap();
                     *num += metrics.succeed;
                     (chunk, i, metrics)
