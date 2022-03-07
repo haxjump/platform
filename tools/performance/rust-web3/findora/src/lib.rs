@@ -4,6 +4,7 @@ use crate::utils::extract_keypair_from_file;
 use bip0039::{Count, Language, Mnemonic};
 use bip32::{DerivationPath, XPrv};
 use libsecp256k1::{PublicKey, SecretKey};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use std::cell::RefCell;
@@ -89,8 +90,13 @@ pub struct NetworkInfo {
 }
 
 impl TestClient {
-    pub fn setup(url: Option<String>) -> Self {
-        let transport = web3::transports::Http::new(url.unwrap_or_else(|| WEB3_SRV.to_string()).as_str()).unwrap();
+    pub fn setup(url: Option<String>, timeout: Option<u64>) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(timeout.unwrap_or(3)))
+            .build()
+            .unwrap();
+        let url = Url::parse(url.as_deref().unwrap_or(WEB3_SRV)).unwrap();
+        let transport = web3::transports::Http::with_client(client, url);
         let web3 = Arc::new(web3::Web3::new(transport));
         let eth = Arc::new(web3.eth());
         let accounts = Arc::new(web3.accounts());
@@ -181,7 +187,7 @@ impl TestClient {
         let wait_time = block_time.unwrap_or(BLOCK_TIME) * 3 + 1;
         let chain_id = self.chain_id().map(|id| id.as_u64());
         let gas_price = self.gas_price();
-        let nonce = RefCell::new(self.nonce(source_address, Some(BlockNumber::Pending)).unwrap());
+        let nonce = RefCell::new(self.nonce(source_address, None).unwrap());
         targets
             .iter()
             .map(|(account, am)| {
@@ -228,7 +234,7 @@ impl TestClient {
                         Err(e) => {
                             metric.status = 97;
                             // retrieve nonce if failed to send tx
-                            *nonce.borrow_mut() = self.nonce(source_address, Some(BlockNumber::Pending)).unwrap();
+                            *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
                             // give it another chance
                             tx_object.nonce = Some(*nonce.borrow());
                             if let Ok(signed) = self.rt.block_on(self.accounts.sign_transaction(tx_object, &source_sk))
@@ -251,13 +257,12 @@ impl TestClient {
                                     }
                                     Err(e) => {
                                         println!("give up {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
-                                        *nonce.borrow_mut() =
-                                            self.nonce(source_address, Some(BlockNumber::Pending)).unwrap();
+                                        *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
                                     }
                                 }
                             } else {
                                 println!("give up {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
-                                *nonce.borrow_mut() = self.nonce(source_address, Some(BlockNumber::Pending)).unwrap();
+                                *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
                             }
                         }
                     },
@@ -265,7 +270,7 @@ impl TestClient {
                         println!("{}/{} {:?} {:?}", idx + 1, total, metric.to, e);
                         metric.status = 98;
                         // retrieve nonce if failed to send tx
-                        *nonce.borrow_mut() = self.nonce(source_address, Some(BlockNumber::Pending)).unwrap();
+                        *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
                     }
                 }
 

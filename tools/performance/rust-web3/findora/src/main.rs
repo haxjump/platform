@@ -37,6 +37,10 @@ struct Cli {
     #[clap(long)]
     network: Option<String>,
 
+    /// http request timeout, seconds
+    #[clap(long)]
+    timeout: Option<u64>,
+
     #[clap(subcommand)]
     command: Option<Commands>,
 }
@@ -48,6 +52,10 @@ enum Commands {
         /// ethereum-compatible network
         #[clap(long)]
         network: String,
+
+        /// http request timeout, seconds
+        #[clap(long)]
+        timeout: Option<u64>,
 
         /// block time of the network
         #[clap(long, default_value_t = BLOCK_TIME)]
@@ -75,6 +83,10 @@ enum Commands {
         #[clap(long)]
         network: String,
 
+        /// http request timeout, seconds
+        #[clap(long)]
+        timeout: Option<u64>,
+
         /// ethereum address
         #[clap(long)]
         account: Address,
@@ -85,6 +97,10 @@ enum Commands {
         /// ethereum-compatible network
         #[clap(long)]
         network: String,
+
+        /// http request timeout, seconds
+        #[clap(long)]
+        timeout: Option<u64>,
 
         /// transaction hash
         #[clap(long)]
@@ -117,30 +133,38 @@ fn calc_pool_size(keys: usize, max_par: usize, min_par: usize) -> usize {
     max_pool_size
 }
 
-fn eth_transaction(network: &str, hash: H256) {
+fn eth_transaction(network: &str, timeout: Option<u64>, hash: H256) {
     let network = real_network(network);
     // use first endpoint to fund accounts
-    let client = TestClient::setup(network[0].clone());
+    let client = TestClient::setup(network[0].clone(), timeout);
     let tx = client.transaction(TransactionId::from(hash));
     println!("{:?}", tx);
 }
 
-fn eth_account(network: &str, account: Address) {
+fn eth_account(network: &str, timeout: Option<u64>, account: Address) {
     let network = real_network(network);
     // use first endpoint to fund accounts
-    let client = TestClient::setup(network[0].clone());
+    let client = TestClient::setup(network[0].clone(), timeout);
     let balance = client.balance(account, None);
     let nonce = client.nonce(account, None);
     println!("{:?}: {} {:?}", account, balance, nonce);
 }
 
-fn fund_accounts(network: &str, block_time: u64, count: u64, am: u64, load: bool, redeposit: bool) {
+fn fund_accounts(
+    network: &str,
+    timeout: Option<u64>,
+    block_time: u64,
+    count: u64,
+    am: u64,
+    load: bool,
+    redeposit: bool,
+) {
     let mut amount = web3::types::U256::exp10(17); // 0.1 eth
     amount.mul_assign(am);
 
     let network = real_network(network);
     // use first endpoint to fund accounts
-    let client = TestClient::setup(network[0].clone());
+    let client = TestClient::setup(network[0].clone(), timeout);
     let balance = client.balance(client.root_addr, None);
     println!("Balance of {:?}: {}", client.root_addr, balance);
 
@@ -209,21 +233,34 @@ fn main() -> web3::Result<()> {
     match &cli.command {
         Some(Commands::Fund {
             network,
+            timeout,
             block_time,
             count,
             amount,
             load,
             redeposit,
         }) => {
-            fund_accounts(network.as_ref(), *block_time, *count, *amount, *load, *redeposit);
+            fund_accounts(
+                network.as_ref(),
+                *timeout,
+                *block_time,
+                *count,
+                *amount,
+                *load,
+                *redeposit,
+            );
             return Ok(());
         }
-        Some(Commands::Info { network, account }) => {
-            eth_account(network.as_ref(), *account);
+        Some(Commands::Info {
+            network,
+            timeout,
+            account,
+        }) => {
+            eth_account(network.as_ref(), *timeout, *account);
             return Ok(());
         }
-        Some(Commands::Transaction { network, hash }) => {
-            eth_transaction(network.as_ref(), *hash);
+        Some(Commands::Transaction { network, timeout, hash }) => {
+            eth_transaction(network.as_ref(), *timeout, *hash);
             return Ok(());
         }
         None => {}
@@ -232,6 +269,7 @@ fn main() -> web3::Result<()> {
     let count = cli.count;
     let min_par = cli.min_parallelism;
     let max_par = cli.max_parallelism;
+    let timeout = cli.timeout;
     let source_file = cli.source;
     let block_time = Some(cli.block_time);
     let source_keys: Vec<KeyPair> =
@@ -252,10 +290,10 @@ fn main() -> web3::Result<()> {
     let clients = if let Some(endpoints) = networks {
         endpoints
             .into_iter()
-            .map(|n| Arc::new(TestClient::setup(n)))
+            .map(|n| Arc::new(TestClient::setup(n, timeout)))
             .collect::<Vec<_>>()
     } else {
-        vec![Arc::new(TestClient::setup(None))]
+        vec![Arc::new(TestClient::setup(None, timeout))]
     };
     let client = clients[0].clone();
 
