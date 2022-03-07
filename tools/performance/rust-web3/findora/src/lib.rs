@@ -128,6 +128,12 @@ impl TestClient {
         self.rt.block_on(self.eth.transaction_count(from, block)).ok()
     }
 
+    pub fn pending_nonce(&self, from: Address) -> Option<U256> {
+        self.rt
+            .block_on(self.eth.transaction_count(from, Some(BlockNumber::Pending)))
+            .ok()
+    }
+
     pub fn gas_price(&self) -> Option<U256> {
         self.rt.block_on(self.eth.gas_price()).ok()
     }
@@ -178,6 +184,7 @@ impl TestClient {
         source: Option<(secp256k1::SecretKey, Address)>,
         targets: &[(Address, U256)],
         block_time: &Option<u64>,
+        need_wait: bool,
     ) -> web3::Result<TransferMetrics> {
         let mut results = vec![];
         let mut succeed = 0u64;
@@ -187,7 +194,8 @@ impl TestClient {
         let wait_time = block_time.unwrap_or(BLOCK_TIME) * 3 + 1;
         let chain_id = self.chain_id().map(|id| id.as_u64());
         let gas_price = self.gas_price();
-        let nonce = RefCell::new(self.nonce(source_address, None).unwrap());
+        let nonce = RefCell::new(self.pending_nonce(source_address).unwrap());
+        let last_err_cnt = RefCell::new(0u64);
         targets
             .iter()
             .map(|(account, am)| {
@@ -218,23 +226,18 @@ impl TestClient {
                     Ok(signed) => match self.rt.block_on(self.eth.send_raw_transaction(signed.raw_transaction)) {
                         Ok(hash) => {
                             metric.hash = Some(hash);
-                            let (wait, receipt) =
-                                self.wait_for_tx_receipt(hash, Duration::from_millis(100), wait_time * 10);
-                            match receipt {
-                                Some(r) if r.status == Some(U64::one()) => {
-                                    succeed += 1;
-                                    metric.status = 1;
-                                }
-                                _ => {}
-                            }
-                            metric.wait = wait;
                             println!("{}/{} {:?} {:?}", idx + 1, total, metric.to, hash);
                             nonce.borrow_mut().add_assign(U256::one());
                         }
                         Err(e) => {
                             metric.status = 97;
+                            let wait_time = 2u64;
+                            last_err_cnt.borrow_mut().add_assign(1);
+
+                            let factor = *last_err_cnt.borrow();
+                            std::thread::sleep(Duration::from_secs(wait_time * factor));
                             // retrieve nonce if failed to send tx
-                            *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
+                            *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                             // give it another chance
                             tx_object.nonce = Some(*nonce.borrow());
                             if let Ok(signed) = self.rt.block_on(self.accounts.sign_transaction(tx_object, &source_sk))
@@ -242,75 +245,97 @@ impl TestClient {
                                 match self.rt.block_on(self.eth.send_raw_transaction(signed.raw_transaction)) {
                                     Ok(hash) => {
                                         metric.hash = Some(hash);
-                                        let (wait, receipt) =
-                                            self.wait_for_tx_receipt(hash, Duration::from_millis(100), wait_time * 10);
-                                        match receipt {
-                                            Some(r) if r.status == Some(U64::one()) => {
-                                                succeed += 1;
-                                                metric.status = 1;
-                                            }
-                                            _ => {}
-                                        }
-                                        metric.wait = wait;
-                                        println!("retry {}/{} {:?} {:?}", idx + 1, total, metric.to, hash);
+                                        println!(
+                                            "retry {}/{} {:?} {:?} {}",
+                                            idx + 1,
+                                            total,
+                                            metric.to,
+                                            hash,
+                                            *last_err_cnt.borrow()
+                                        );
+                                        *last_err_cnt.borrow_mut() = 0;
                                         nonce.borrow_mut().add_assign(U256::one());
                                     }
                                     Err(e) => {
-                                        println!("give up {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
-                                        *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
+                                        println!(
+                                            "give up send {}/{} {:?} {} {:?}",
+                                            idx + 1,
+                                            total,
+                                            metric.to,
+                                            *last_err_cnt.borrow(),
+                                            e
+                                        );
+                                        last_err_cnt.borrow_mut().add_assign(1);
+                                        *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                                     }
                                 }
                             } else {
-                                println!("give up {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
-                                *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
+                                println!(
+                                    "give up retry sign {}/{} {:?} {} {:?}",
+                                    idx + 1,
+                                    total,
+                                    metric.to,
+                                    *last_err_cnt.borrow(),
+                                    e
+                                );
+                                *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                             }
                         }
                     },
                     Err(e) => {
-                        println!("{}/{} {:?} {:?}", idx + 1, total, metric.to, e);
+                        println!("give up sign {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
                         metric.status = 98;
                         // retrieve nonce if failed to send tx
-                        *nonce.borrow_mut() = self.nonce(source_address, None).unwrap();
+                        *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                     }
                 }
 
                 results.push(metric);
             });
 
-        //println!("Waiting for final results...");
+        if !need_wait {
+            return Ok(TransferMetrics {
+                from: source_address,
+                total: targets.len() as u64,
+                succeed,
+                txs: results,
+            });
+        }
 
-        //results.iter_mut().enumerate().for_each(|(idx, metric)| {
-        //    let mut retry = wait_time;
-        //    loop {
-        //        if let Some(hash) = metric.hash {
-        //            if let Some(receipt) = self.transaction_receipt(hash) {
-        //                if let Some(status) = receipt.status {
-        //                    if status == U64::from(1u64) {
-        //                        succeed += 1;
-        //                        metric.status = 1;
-        //                    }
-        //                }
-        //                metric.wait = wait_time + 1 - retry;
-        //                break;
-        //            } else {
-        //                std::thread::sleep(Duration::from_secs(1));
-        //                retry -= 1;
-        //                if retry == 0 {
-        //                    metric.wait = wait_time;
-        //                    break;
-        //                }
-        //            }
-        //        }
-        //    }
-        //    println!(
-        //        "{}/{} {:?} {:?} {}",
-        //        idx,
-        //        total,
-        //        metric.to,
-        //        metric.hash,
-        //        metric.status == 1
-        //    );
-        //});
+        println!("Waiting for final results...");
+
+        results.iter_mut().enumerate().for_each(|(idx, metric)| {
+            let mut retry = wait_time;
+            loop {
+                if let Some(hash) = metric.hash {
+                    if let Some(receipt) = self.transaction_receipt(hash) {
+                        if let Some(status) = receipt.status {
+                            if status == U64::from(1u64) {
+                                succeed += 1;
+                                metric.status = 1;
+                            }
+                        }
+                        metric.wait = wait_time + 1 - retry;
+                        break;
+                    } else {
+                        std::thread::sleep(Duration::from_secs(1));
+                        retry -= 1;
+                        if retry == 0 {
+                            metric.wait = wait_time;
+                            break;
+                        }
+                    }
+                }
+            }
+            println!(
+                "{}/{} {:?} {:?} {}",
+                idx,
+                total,
+                metric.to,
+                metric.hash,
+                metric.status == 1
+            );
+        });
 
         println!("Tx succeeded: {}/{}", succeed, total);
 

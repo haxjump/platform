@@ -15,13 +15,13 @@ cargo run --release -- fund --network qa01 --count 100 --amount 1000
 less sources_keys.001
 
 # re-deposit the account whose balance is lower than the specified amount
-cargo run --release -- fund --network qa01 --amount 1000 --load --redeposit
+cargo run --release -- fund --network qa01 --amount 1000 --load --redeposit --timeout 5
 
 # Add more accounts and re-deposit them
 cargo run --release -- fund --network qa01 --count 200 --amount 1000 --load --redeposit
 
 # Starting tests
-cargo run --release -- --network qa01 --count 10 --max-parallism 200
+cargo run --release -- --network qa01 --count 10 --max-parallism 200 --timeout 10
 # 1. Load source accounts from "source_keys.001"
 # 2. Filter out account which doesn't have sufficient balance
 # 3. Generate the "count" of new addresses per source account to receive Ethers
