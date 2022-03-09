@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use std::ops::{Mul, MulAssign};
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::ops::{Mul, MulAssign, Sub};
 use std::str::FromStr;
 use std::{
     path::PathBuf,
@@ -8,7 +10,7 @@ use std::{
 
 use feth::{one_eth_key, utils::*, KeyPair, TestClient, BLOCK_TIME};
 use rayon::prelude::*;
-use web3::types::{Address, TransactionId, H256};
+use web3::types::{Address, Block, BlockId, BlockNumber, TransactionId, H256, U64};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
@@ -106,6 +108,25 @@ enum Commands {
         #[clap(long)]
         hash: H256,
     },
+
+    /// Block Operations
+    Block {
+        /// ethereum-compatible network
+        #[clap(long)]
+        network: String,
+
+        /// http request timeout, seconds
+        #[clap(long)]
+        timeout: Option<u64>,
+
+        /// start block height
+        #[clap(long)]
+        start: Option<u64>,
+
+        /// block count, could be less than zero
+        #[clap(long)]
+        count: Option<i64>,
+    },
 }
 
 fn check_parallel_args(max_par: u64, min_par: u64) {
@@ -148,6 +169,85 @@ fn eth_account(network: &str, timeout: Option<u64>, account: Address) {
     let balance = client.balance(account, None);
     let nonce = client.nonce(account, None);
     println!("{:?}: {} {:?}", account, balance, nonce);
+}
+
+fn eth_blocks(network: &str, timeout: Option<u64>, start: Option<u64>, count: Option<i64>) {
+    let network = real_network(network);
+    // use first endpoint to fund accounts
+    let client = TestClient::setup(network[0].clone(), timeout);
+    if let Some(start) = start {
+        let range = count
+            .map(|c| match c.cmp(&0i64) {
+                Ordering::Equal => start..start + 1,
+                Ordering::Less => {
+                    let n = c.abs() as u64;
+                    if start > n {
+                        start - n..start + 1
+                    } else {
+                        0..start + 1
+                    }
+                }
+                Ordering::Greater => start..start + c.abs() as u64 + 1,
+            })
+            .unwrap_or_else(|| match client.block_number() {
+                Some(end) if start > end.as_u64() => {
+                    panic!(
+                        "start block height is bigger than latest height({}>{})",
+                        start,
+                        end.as_u64()
+                    );
+                }
+                Some(end) => start..end.as_u64() + 1,
+                None => panic!("Failed to obtain block height"),
+            });
+        let last_block: RefCell<Option<(u64, Block<H256>)>> = RefCell::new(if range.start == 0 {
+            None
+        } else {
+            let id = BlockId::Number(BlockNumber::Number(U64::from(range.start - 1)));
+            Some((range.start - 1, client.block_with_tx_hashes(id).unwrap()))
+        });
+        range
+            .map(|number| {
+                let id = BlockId::Number(BlockNumber::Number(U64::from(number)));
+                client.block_with_tx_hashes(id).map(|block| {
+                    let block_time = match &*last_block.borrow() {
+                        Some(last) if last.0 + 1 == number => (block.timestamp - last.1.timestamp).as_u64(),
+                        _ => 0u64,
+                    };
+                    let count = block.transactions.len();
+                    let timestamp = block.timestamp;
+                    *last_block.borrow_mut() = Some((number, block));
+                    (number, timestamp, count, block_time)
+                })
+            })
+            .for_each(|block| {
+                let msg = if let Some(block) = block {
+                    format!("{},{:?},{},{}", block.0, block.1, block.2, block.3)
+                } else {
+                    "None".to_string()
+                };
+                println!("{}", msg);
+            });
+    } else if let Some(b) = client.current_block() {
+        let block_time = match b.number {
+            Some(n) if n > U64::zero() => {
+                if let Some(last) = client.block_with_tx_hashes(BlockId::Number(BlockNumber::Number(n.sub(1)))) {
+                    Some(b.timestamp - last.timestamp)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        println!(
+            "{:?},{},{}",
+            b.number.unwrap_or_default(),
+            b.transactions.len(),
+            block_time.unwrap_or_default(),
+        );
+    } else {
+        println!("Cannot obtain current block");
+    }
 }
 
 fn fund_accounts(
@@ -263,6 +363,15 @@ fn main() -> web3::Result<()> {
         }
         Some(Commands::Transaction { network, timeout, hash }) => {
             eth_transaction(network.as_ref(), *timeout, *hash);
+            return Ok(());
+        }
+        Some(Commands::Block {
+            network,
+            timeout,
+            start,
+            count,
+        }) => {
+            eth_blocks(network.as_ref(), *timeout, *start, *count);
             return Ok(());
         }
         None => {}
@@ -386,12 +495,8 @@ fn main() -> web3::Result<()> {
 
     let avg = total as f64 / elapsed as f64;
     println!(
-        "Performed {} transfers, max concurrences {}, succeed {}, {:.3} Transfer/s, total {} seconds",
-        total,
-        concurrences,
-        total_succeed.lock().unwrap(),
-        avg,
-        elapsed,
+        "Performed {} transfers, max concurrences {}, {:.3} Transfer/s, total {} seconds",
+        total, concurrences, avg, elapsed,
     );
 
     Ok(())

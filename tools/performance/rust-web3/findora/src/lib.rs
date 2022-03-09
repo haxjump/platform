@@ -13,6 +13,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use web3::types::{Block, BlockId};
 use web3::{
     transports::Http,
     types::{
@@ -122,6 +123,16 @@ impl TestClient {
 
     pub fn block_number(&self) -> Option<U64> {
         self.rt.block_on(self.eth.block_number()).ok()
+    }
+
+    pub fn current_block(&self) -> Option<Block<H256>> {
+        self.rt
+            .block_on(self.eth.block(BlockId::Number(BlockNumber::Latest)))
+            .unwrap_or_default()
+    }
+
+    pub fn block_with_tx_hashes(&self, id: BlockId) -> Option<Block<H256>> {
+        self.rt.block_on(self.eth.block(id)).unwrap_or_default()
     }
 
     pub fn nonce(&self, from: Address, block: Option<BlockNumber>) -> Option<U256> {
