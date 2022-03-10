@@ -51,3 +51,19 @@ cargo run --release -- transaction --network qa01 --hash 0x1d44bd3fc1764c6dfadb6
 
 # Retrieve account basic information, such as `balance` and `nonce`
 cargo run --release -- info --network qa01 --account 0x512a4d5e8478D11682925b29705F6c8d6AE9e39d
+
+# Retrieve block information, such as height, timestamp, txn counts, time interval
+# show current block information
+cargo run --release -- block --network qa01
+# 11297,1646890818,0,16
+# Show blocks since specified height
+cargo run --release -- block --network qa01 --start 11290
+# 11290,1646890708,0,16
+# 11291,1646890724,0,16
+# 11292,1646890740,0,16
+# 11293,1646890755,0,15
+# 11294,1646890771,0,16
+# 11295,1646890787,0,16
+# 11296,1646890802,0,15
+# 11297,1646890818,0,16
+# 11298,1646890834,0,16

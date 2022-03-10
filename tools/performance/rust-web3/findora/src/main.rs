@@ -240,8 +240,9 @@ fn eth_blocks(network: &str, timeout: Option<u64>, start: Option<u64>, count: Op
             _ => None,
         };
         println!(
-            "{:?},{},{}",
+            "{},{:?},{},{}",
             b.number.unwrap_or_default(),
+            b.timestamp,
             b.transactions.len(),
             block_time.unwrap_or_default(),
         );
