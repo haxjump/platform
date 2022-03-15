@@ -321,7 +321,7 @@ fn fund_accounts(
         .collect::<Vec<_>>();
     // 1000 eth
     let metrics = client
-        .distribution(None, &source_accounts, &Some(block_time), true)
+        .distribution(1, None, &source_accounts, &Some(block_time), true)
         .unwrap();
     // save metrics to file
     let data = serde_json::to_string(&metrics).unwrap();
@@ -474,7 +474,9 @@ fn main() -> web3::Result<()> {
                 .into_par_iter()
                 .enumerate()
                 .map(|(i, (source, targets))| {
-                    let metrics = client.distribution(Some(*source), targets, &block_time, false).unwrap();
+                    let metrics = client
+                        .distribution(i + 1, Some(*source), targets, &block_time, false)
+                        .unwrap();
                     let mut num = total_succeed.lock().unwrap();
                     *num += metrics.succeed;
                     (chunk, i, metrics)
