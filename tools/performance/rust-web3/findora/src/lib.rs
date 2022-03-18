@@ -1,6 +1,10 @@
+pub mod error;
 pub mod utils;
 
-use crate::utils::extract_keypair_from_file;
+use crate::{
+    error::{Error, Result},
+    utils::extract_keypair_from_file,
+};
 use bip0039::{Count, Language, Mnemonic};
 use bip32::{DerivationPath, XPrv};
 use libsecp256k1::{PublicKey, SecretKey};
@@ -94,14 +98,6 @@ pub struct NetworkInfo {
     pub block_number: U64,
     pub gas_price: U256,
     pub frc20_code: Option<Bytes>,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Error {
-    CheckTx,
-    SyncTx,
-    SendErr,
-    Unknown,
 }
 
 impl TestClient {
@@ -223,7 +219,7 @@ impl TestClient {
                     Error::SyncTx
                 } else if err_str.contains("Transaction check error") {
                     Error::CheckTx
-                } else if err_str.contains("failed to send request") {
+                } else if err_str.contains("error sending request") {
                     Error::SendErr
                 } else {
                     Error::Unknown
@@ -240,7 +236,7 @@ impl TestClient {
         targets: &[(Address, U256)],
         block_time: &Option<u64>,
         need_wait: bool,
-    ) -> web3::Result<TransferMetrics> {
+    ) -> Result<TransferMetrics> {
         let mut results = vec![];
         let mut succeed = 0u64;
         let total = targets.len();
@@ -315,47 +311,61 @@ impl TestClient {
                                     Error::CheckTx => {
                                         println!("Transaction check error");
                                     }
-                                    Error::Unknown => {
+                                    _ => {
                                         println!("unknown error");
                                     }
                                 }
-                                println!("retry for error {:?}", e);
-                                metric.status = 97;
-                                let wait_time = 2u64;
-                                last_err_cnt.borrow_mut().add_assign(1);
-                                let factor = *last_err_cnt.borrow();
-                                std::thread::sleep(Duration::from_secs(wait_time * factor));
-                                // retrieve nonce if failed to send tx
-                                *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
-                                // give it another chance
-                                tx_object.nonce = Some(*nonce.borrow());
-                                if let Ok(signed) =
-                                    self.rt.block_on(self.accounts.sign_transaction(tx_object, &source_sk))
-                                {
-                                    let mut changed = false;
-                                    while self.overflow_flag.load(Ordering::Relaxed) == id {
-                                        println!("try to check if error persists {}", id);
-                                        if self
+                                let mut skip = false;
+                                while self.overflow_flag.load(Ordering::Relaxed) == id {
+                                    println!("try to check if error persists {}", id);
+                                    let mut tx_object = tx_object.clone();
+                                    if let Some(nonce) = self.pending_nonce(source_address) {
+                                        tx_object.nonce = Some(nonce);
+                                    }
+                                    if let Ok(signed) =
+                                        self.rt.block_on(self.accounts.sign_transaction(tx_object, &source_sk))
+                                    {
+                                        match self
                                             .rt
                                             .block_on(self.eth.send_raw_transaction(signed.raw_transaction.clone()))
-                                            .is_ok()
                                         {
-                                            if self.overflow_flag.compare_exchange(
-                                                id,
-                                                0,
-                                                Ordering::Acquire,
-                                                Ordering::Relaxed,
-                                            ) != Ok(id)
-                                            {
-                                                panic!("This should never happened");
-                                            } else {
-                                                changed = true;
-                                                break;
+                                            Ok(_) => {
+                                                if self.overflow_flag.compare_exchange(
+                                                    id,
+                                                    0,
+                                                    Ordering::Acquire,
+                                                    Ordering::Relaxed,
+                                                ) != Ok(id)
+                                                {
+                                                    panic!("This should never happened");
+                                                } else {
+                                                    skip = true;
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                println!("Failed to send tx {:?}, continue to trying", e);
                                             }
                                         }
-                                        std::thread::sleep(Duration::from_secs(3));
+                                    } else {
+                                        println!("Failed to sign tx, nothing we can do...")
                                     }
-                                    if !changed {
+                                    std::thread::sleep(Duration::from_secs(3));
+                                }
+                                if !skip {
+                                    println!("retry for error {:?}", e);
+                                    metric.status = 97;
+                                    let wait_time = 2u64;
+                                    last_err_cnt.borrow_mut().add_assign(1);
+                                    let factor = *last_err_cnt.borrow();
+                                    std::thread::sleep(Duration::from_secs(wait_time * factor));
+                                    // retrieve nonce if failed to send tx
+                                    *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
+                                    // give it another chance
+                                    tx_object.nonce = Some(*nonce.borrow());
+                                    if let Ok(signed) =
+                                        self.rt.block_on(self.accounts.sign_transaction(tx_object, &source_sk))
+                                    {
                                         match self.rt.block_on(self.eth.send_raw_transaction(signed.raw_transaction)) {
                                             Ok(hash) => {
                                                 metric.hash = Some(hash);
@@ -383,17 +393,17 @@ impl TestClient {
                                                 *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                                             }
                                         }
+                                    } else {
+                                        println!(
+                                            "give up retry sign {}/{} {:?} {} {:?}",
+                                            idx + 1,
+                                            total,
+                                            metric.to,
+                                            *last_err_cnt.borrow(),
+                                            e
+                                        );
+                                        *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                                     }
-                                } else {
-                                    println!(
-                                        "give up retry sign {}/{} {:?} {} {:?}",
-                                        idx + 1,
-                                        total,
-                                        metric.to,
-                                        *last_err_cnt.borrow(),
-                                        e
-                                    );
-                                    *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
                                 }
                             }
                         }
