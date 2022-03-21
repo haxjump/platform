@@ -143,7 +143,28 @@ impl TestClient {
     }
 
     pub fn block_with_tx_hashes(&self, id: BlockId) -> Option<Block<H256>> {
-        self.rt.block_on(self.eth.block(id)).unwrap_or_default()
+        self.block_with_tx_hashes_inner(id, None, None)
+    }
+
+    pub fn block_with_tx_hashes_inner(
+        &self,
+        id: BlockId,
+        interval: Option<u64>,
+        times: Option<u64>,
+    ) -> Option<Block<H256>> {
+        let interval = interval.unwrap_or(1);
+        let mut retries = 1u64;
+        loop {
+            if let Ok(Some(block)) = self.rt.block_on(self.eth.block(id)) {
+                break Some(block);
+            }
+            if times == Some(retries) || times == Some(0u64) {
+                break None;
+            }
+            println!("retries {}", retries);
+            retries += 1;
+            std::thread::sleep(Duration::from_secs(interval));
+        }
     }
 
     pub fn nonce(&self, from: Address, block: Option<BlockNumber>) -> Option<U256> {
@@ -151,9 +172,26 @@ impl TestClient {
     }
 
     pub fn pending_nonce(&self, from: Address) -> Option<U256> {
-        self.rt
-            .block_on(self.eth.transaction_count(from, Some(BlockNumber::Pending)))
-            .ok()
+        self.pending_nonce_inner(from, Some(3), None)
+    }
+
+    pub fn pending_nonce_inner(&self, from: Address, interval: Option<u64>, times: Option<u64>) -> Option<U256> {
+        let interval = interval.unwrap_or(5);
+        let mut tries = 1u64;
+        loop {
+            match self
+                .rt
+                .block_on(self.eth.transaction_count(from, Some(BlockNumber::Pending)))
+            {
+                Ok(nonce) => break Some(nonce),
+                Err(e) => println!("failed to get nonce, tries {}, {:?}", tries, e),
+            }
+            std::thread::sleep(Duration::from_secs(interval));
+            if times == Some(tries) || times == Some(0u64) {
+                break None;
+            }
+            tries += 1;
+        }
     }
 
     pub fn gas_price(&self) -> Option<U256> {

@@ -15,6 +15,7 @@ pub fn real_network(network: &str) -> Vec<Option<String>> {
     match network {
         "local" => vec![Some("http://localhost:8545".to_string())],
         "anvil" => vec![Some("https://prod-testnet.prod.findora.org:8545".to_string())],
+        "main" => vec![Some("https://prod-mainnet.prod.findora.org:8545".to_string())],
         "mock" => vec![Some("https://dev-mainnetmock.dev.findora.org:8545".to_string())],
         "test" => vec![Some("http://34.211.109.216:8545".to_string())],
         "qa01" => vec![Some("https://dev-qa01.dev.findora.org:8545".to_string())],
