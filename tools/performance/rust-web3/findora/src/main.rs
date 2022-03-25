@@ -5,20 +5,16 @@ use std::ops::{Mul, MulAssign, Sub};
 use std::str::FromStr;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
 };
 
 use feth::{one_eth_key, utils::*, KeyPair, TestClient, BLOCK_TIME};
 use rayon::prelude::*;
-use web3::types::{Address, Block, BlockId, BlockNumber, TransactionId, H256, U64};
+use web3::types::{Address, Block, BlockId, BlockNumber, TransactionId, H256, U256, U64};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Cli {
-    /// The minimum parallelism
-    #[clap(long, default_value_t = 1)]
-    min_parallelism: u64,
-
     /// The maximum parallelism
     #[clap(long, default_value_t = 200)]
     max_parallelism: u64,
@@ -129,7 +125,7 @@ enum Commands {
     },
 }
 
-fn check_parallel_args(max_par: u64, min_par: u64) {
+fn check_parallel_args(max_par: u64) {
     if max_par > log_cpus() * 1000 {
         panic!(
             "Two much working thread, maybe overload the system {}/{}",
@@ -137,20 +133,16 @@ fn check_parallel_args(max_par: u64, min_par: u64) {
             log_cpus(),
         )
     }
-    if max_par < min_par || min_par == 0 || max_par == 0 {
-        panic!("Invalid parallel parameters: max {}, min {}", max_par, min_par);
+    if max_par == 0 {
+        panic!("Invalid parallel parameters: max {}", max_par);
     }
 }
 
-fn calc_pool_size(keys: usize, max_par: usize, min_par: usize) -> usize {
+fn calc_pool_size(keys: usize, max_par: usize) -> usize {
     let mut max_pool_size = keys * 2;
     if max_pool_size > max_par {
         max_pool_size = max_par;
     }
-    if max_pool_size < min_par {
-        max_pool_size = min_par;
-    }
-
     max_pool_size
 }
 
@@ -169,6 +161,46 @@ fn eth_account(network: &str, timeout: Option<u64>, account: Address) {
     let balance = client.balance(account, None);
     let nonce = client.nonce(account, None);
     println!("{:?}: {} {:?}", account, balance, nonce);
+}
+
+#[derive(Debug, Clone)]
+struct BlockInfo {
+    number: u64,
+    timestamp: U256,
+    count: usize,
+    block_time: u64,
+}
+
+fn para_eth_blocks(client: TestClient, start: u64, end: u64) {
+    let client = Arc::new(client);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+    let (tx, rx) = mpsc::channel();
+    (start..end).for_each(|n| {
+        let tx = tx.clone();
+        let client = client.clone();
+        pool.install(move || {
+            let id = BlockId::Number(BlockNumber::Number(U64::from(n)));
+            let b = client.block_with_tx_hashes(id).map(|b| BlockInfo {
+                number: b.number.unwrap().as_u64(),
+                timestamp: b.timestamp,
+                count: b.transactions.len(),
+                block_time: 0u64,
+            });
+            tx.send((n, b)).unwrap();
+        })
+    });
+    let mut blocks = vec![None; (end - start) as usize];
+    for _ in start..end {
+        let j = rx.recv().unwrap();
+        *blocks.get_mut((j.0 - start) as usize).unwrap() = j.1
+    }
+    blocks.iter().for_each(|b| {
+        if let Some(b) = b {
+            println!("{},{},{},{}", b.number, b.timestamp, b.count, b.block_time);
+        } else {
+            println!("None");
+        }
+    })
 }
 
 fn eth_blocks(network: &str, timeout: Option<u64>, start: Option<u64>, count: Option<i64>) {
@@ -200,34 +232,35 @@ fn eth_blocks(network: &str, timeout: Option<u64>, start: Option<u64>, count: Op
                 Some(end) => start..end.as_u64() + 1,
                 None => panic!("Failed to obtain block height"),
             });
-        let last_block: RefCell<Option<(u64, Block<H256>)>> = RefCell::new(if range.start == 0 {
+        let _last_block: RefCell<Option<(u64, Block<H256>)>> = RefCell::new(if range.start == 0 {
             None
         } else {
             let id = BlockId::Number(BlockNumber::Number(U64::from(range.start - 1)));
             Some((range.start - 1, client.block_with_tx_hashes(id).unwrap()))
         });
-        range
-            .map(|number| {
-                let id = BlockId::Number(BlockNumber::Number(U64::from(number)));
-                client.block_with_tx_hashes(id).map(|block| {
-                    let block_time = match &*last_block.borrow() {
-                        Some(last) if last.0 + 1 == number => (block.timestamp - last.1.timestamp).as_u64(),
-                        _ => 0u64,
-                    };
-                    let count = block.transactions.len();
-                    let timestamp = block.timestamp;
-                    *last_block.borrow_mut() = Some((number, block));
-                    (number, timestamp, count, block_time)
-                })
-            })
-            .for_each(|block| {
-                let msg = if let Some(block) = block {
-                    format!("{},{:?},{},{}", block.0, block.1, block.2, block.3)
-                } else {
-                    "None".to_string()
-                };
-                println!("{}", msg);
-            });
+        para_eth_blocks(client, range.start, range.end);
+        //range
+        //    .map(|number| {
+        //        let id = BlockId::Number(BlockNumber::Number(U64::from(number)));
+        //        client.block_with_tx_hashes(id).map(|block| {
+        //            let block_time = match &*last_block.borrow() {
+        //                Some(last) if last.0 + 1 == number => (block.timestamp - last.1.timestamp).as_u64(),
+        //                _ => 0u64,
+        //            };
+        //            let count = block.transactions.len();
+        //            let timestamp = block.timestamp;
+        //            *last_block.borrow_mut() = Some((number, block));
+        //            (number, timestamp, count, block_time)
+        //        })
+        //    })
+        //    .for_each(|block| {
+        //        let msg = if let Some(block) = block {
+        //            format!("{},{:?},{},{}", block.0, block.1, block.2, block.3)
+        //        } else {
+        //            "None".to_string()
+        //        };
+        //        println!("{}", msg);
+        //    });
     } else if let Some(b) = client.current_block() {
         let block_time = match b.number {
             Some(n) if n > U64::zero() => {
@@ -379,7 +412,6 @@ fn main() -> web3::Result<()> {
     }
 
     let count = cli.count;
-    let min_par = cli.min_parallelism;
     let max_par = cli.max_parallelism;
     let timeout = cli.timeout;
     let source_file = cli.source;
@@ -389,9 +421,9 @@ fn main() -> web3::Result<()> {
     let target_amount = web3::types::U256::exp10(16); // 0.01 eth
 
     println!("logical cpus {}, physical cpus {}", log_cpus(), phy_cpus());
-    check_parallel_args(max_par, min_par);
+    check_parallel_args(max_par);
 
-    let max_pool_size = calc_pool_size(source_keys.len(), max_par as usize, min_par as usize);
+    let max_pool_size = calc_pool_size(source_keys.len(), max_par as usize);
     rayon::ThreadPoolBuilder::new()
         .num_threads(max_pool_size)
         .build_global()
@@ -440,7 +472,7 @@ fn main() -> web3::Result<()> {
         })
         .collect::<Vec<_>>();
 
-    if min_par == 0 || count == 0 || source_keys.is_empty() {
+    if count == 0 || source_keys.is_empty() {
         println!("Not enough sufficient source accounts or target accounts, skipped.");
         return Ok(());
     }
