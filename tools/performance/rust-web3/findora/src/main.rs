@@ -1,14 +1,15 @@
 use clap::{Parser, Subcommand};
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::ops::{Mul, MulAssign, Sub};
-use std::str::FromStr;
 use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    ops::{Mul, MulAssign, Sub},
     path::PathBuf,
+    str::FromStr,
     sync::{mpsc, Arc, Mutex},
 };
 
 use feth::{one_eth_key, utils::*, KeyPair, TestClient, BLOCK_TIME};
+use log::{debug, error, info};
 use rayon::prelude::*;
 use web3::types::{Address, Block, BlockId, BlockNumber, TransactionId, H256, U256, U64};
 
@@ -38,6 +39,10 @@ struct Cli {
     /// http request timeout, seconds
     #[clap(long)]
     timeout: Option<u64>,
+
+    /// save metric file or not
+    #[clap(long)]
+    keep_metric: bool,
 
     #[clap(subcommand)]
     command: Option<Commands>,
@@ -196,9 +201,9 @@ fn para_eth_blocks(client: TestClient, start: u64, end: u64) {
     }
     blocks.iter().for_each(|b| {
         if let Some(b) = b {
-            println!("{},{},{},{}", b.number, b.timestamp, b.count, b.block_time);
+            info!("{},{},{},{}", b.number, b.timestamp, b.count, b.block_time);
         } else {
-            println!("None");
+            info!("None");
         }
     })
 }
@@ -280,7 +285,7 @@ fn eth_blocks(network: &str, timeout: Option<u64>, start: Option<u64>, count: Op
             block_time.unwrap_or_default(),
         );
     } else {
-        println!("Cannot obtain current block");
+        error!("Cannot obtain current block");
     }
 }
 
@@ -300,14 +305,14 @@ fn fund_accounts(
     // use first endpoint to fund accounts
     let client = TestClient::setup(network[0].clone(), timeout);
     let balance = client.balance(client.root_addr, None);
-    println!("Balance of {:?}: {}", client.root_addr, balance);
+    info!("Balance of {:?}: {}", client.root_addr, balance);
 
     let mut source_keys = if load {
         let keys: Vec<_> = serde_json::from_str(std::fs::read_to_string("source_keys.001").unwrap().as_str()).unwrap();
         keys
     } else {
         // check if the key file exists
-        println!("generating new source keys");
+        debug!("generating new source keys");
         if std::fs::File::open("source_keys.001").is_ok() {
             panic!("file \"source_keys.001\" already exists");
         }
@@ -353,18 +358,21 @@ fn fund_accounts(
         })
         .collect::<Vec<_>>();
     // 1000 eth
-    let metrics = client
+    let _metrics = client
         .distribution(1, None, &source_accounts, &Some(block_time), true)
         .unwrap();
     // save metrics to file
-    let data = serde_json::to_string(&metrics).unwrap();
-    std::fs::write("metrics.001", &data).unwrap();
+    //let data = serde_json::to_string(&metrics).unwrap();
+    //std::fs::write("metrics.001", &data).unwrap();
 }
 
 fn main() -> web3::Result<()> {
-    let cli = Cli::parse();
+    env_logger::init();
 
-    println!("{:?}", cli);
+    let cli = Cli::parse();
+    debug!("{:?}", cli);
+    info!("logical cpus {}, physical cpus {}", log_cpus(), phy_cpus());
+    let keep_metric = cli.keep_metric;
 
     match &cli.command {
         Some(Commands::Fund {
@@ -420,7 +428,6 @@ fn main() -> web3::Result<()> {
         serde_json::from_str(std::fs::read_to_string(source_file).unwrap().as_str()).unwrap();
     let target_amount = web3::types::U256::exp10(16); // 0.01 eth
 
-    println!("logical cpus {}, physical cpus {}", log_cpus(), phy_cpus());
     check_parallel_args(max_par);
 
     let max_pool_size = calc_pool_size(source_keys.len(), max_par as usize);
@@ -428,7 +435,7 @@ fn main() -> web3::Result<()> {
         .num_threads(max_pool_size)
         .build_global()
         .unwrap();
-    println!("thread pool size {}", max_pool_size);
+    info!("thread pool size {}", max_pool_size);
 
     let networks = cli.network.map(|n| real_network(n.as_str()));
     let clients = if let Some(endpoints) = networks {
@@ -441,12 +448,12 @@ fn main() -> web3::Result<()> {
     };
     let client = clients[0].clone();
 
-    println!("chain_id:     {}", client.chain_id().unwrap());
-    println!("gas_price:    {}", client.gas_price().unwrap());
-    println!("block_number: {}", client.block_number().unwrap());
-    println!("frc20 code:   {:?}", client.frc20_code().unwrap());
+    info!("chain_id:     {}", client.chain_id().unwrap());
+    info!("gas_price:    {}", client.gas_price().unwrap());
+    info!("block_number: {}", client.block_number().unwrap());
+    info!("frc20 code:   {:?}", client.frc20_code().unwrap());
 
-    println!("preparing test data...");
+    info!("preparing test data...");
     let source_keys = source_keys
         .par_iter()
         .filter_map(|kp| {
@@ -466,14 +473,14 @@ fn main() -> web3::Result<()> {
                         )
                     })
                     .collect::<Vec<_>>();
-                println!("account {:?} added to source pool", address);
+                debug!("account {:?} added to source pool", address);
                 Some(((secret, address), target))
             }
         })
         .collect::<Vec<_>>();
 
     if count == 0 || source_keys.is_empty() {
-        println!("Not enough sufficient source accounts or target accounts, skipped.");
+        error!("Not enough sufficient source accounts or target accounts, skipped.");
         return Ok(());
     }
 
@@ -493,7 +500,7 @@ fn main() -> web3::Result<()> {
     // one-thread per source key
     // fix one source key to one endpoint
 
-    println!("starting tests...");
+    debug!("starting tests...");
     let total = source_keys.len() * count as usize;
     let now = std::time::Instant::now();
     let metrics = source_keys
@@ -519,17 +526,19 @@ fn main() -> web3::Result<()> {
 
     let elapsed = now.elapsed().as_secs();
 
-    println!("saving test files");
-    metrics.into_iter().for_each(|m| {
-        m.into_iter().for_each(|(chunk, i, metrics)| {
-            let file = format!("metrics.target.{}.{}", chunk, i);
-            let data = serde_json::to_string(&metrics).unwrap();
-            std::fs::write(&file, data).unwrap();
-        })
-    });
+    if keep_metric {
+        info!("saving test files");
+        metrics.into_iter().for_each(|m| {
+            m.into_iter().for_each(|(chunk, i, metrics)| {
+                let file = format!("metrics.target.{}.{}", chunk, i);
+                let data = serde_json::to_string(&metrics).unwrap();
+                std::fs::write(&file, data).unwrap();
+            })
+        });
+    }
 
     let avg = total as f64 / elapsed as f64;
-    println!(
+    info!(
         "Performed {} transfers, max concurrences {}, {:.3} Transfer/s, total {} seconds",
         total, concurrences, avg, elapsed,
     );

@@ -8,6 +8,7 @@ use crate::{
 use bip0039::{Count, Language, Mnemonic};
 use bip32::{DerivationPath, XPrv};
 use libsecp256k1::{PublicKey, SecretKey};
+use log::{debug, error, info, warn};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
@@ -161,7 +162,7 @@ impl TestClient {
             if times == Some(retries) || times == Some(0u64) {
                 break None;
             }
-            println!("retries {}", retries);
+            warn!("retries {}", retries);
             retries += 1;
             std::thread::sleep(Duration::from_secs(interval));
         }
@@ -184,7 +185,7 @@ impl TestClient {
                 .block_on(self.eth.transaction_count(from, Some(BlockNumber::Pending)))
             {
                 Ok(nonce) => break Some(nonce),
-                Err(e) => println!("failed to get nonce, tries {}, {:?}", tries, e),
+                Err(e) => error!("failed to get nonce, tries {}, {:?}", tries, e),
             }
             std::thread::sleep(Duration::from_secs(interval));
             if times == Some(tries) || times == Some(0u64) {
@@ -317,13 +318,13 @@ impl TestClient {
                         match self.rt.block_on(self.eth.send_raw_transaction(signed.raw_transaction)) {
                             Ok(hash) => {
                                 metric.hash = Some(hash);
-                                println!("{}/{} {:?} {:?}", idx + 1, total, metric.to, hash);
+                                debug!("{}/{} {:?} {:?}", idx + 1, total, metric.to, hash);
                                 nonce.borrow_mut().add_assign(U256::one());
                                 if let Ok(val) =
                                     self.overflow_flag
                                         .compare_exchange(id, 0, Ordering::Acquire, Ordering::Relaxed)
                                 {
-                                    println!("overflow flag cleared by {} me {}", val, id);
+                                    warn!("overflow flag cleared by {} me {}", val, id);
                                 }
                             }
                             Err(e) => {
@@ -338,24 +339,24 @@ impl TestClient {
                                             if val == 0 {
                                                 val = id;
                                             }
-                                            println!("overflow flag set by {}, me {}", val, id);
+                                            warn!("overflow flag set by {}, me {}", val, id);
                                         }
                                         self.check_wait_overflow(id, None);
                                     }
                                     Error::SendErr => {
                                         // TODO: adjust timeout
-                                        println!("Failed to send request, increase timeout could be helpful");
+                                        error!("Failed to send request, increase timeout could be helpful");
                                     }
                                     Error::CheckTx => {
-                                        println!("Transaction check error");
+                                        error!("Transaction check error");
                                     }
                                     _ => {
-                                        println!("unknown error");
+                                        error!("unknown error");
                                     }
                                 }
                                 let mut skip = false;
                                 while self.overflow_flag.load(Ordering::Relaxed) == id {
-                                    println!("try to check if error persists {}", id);
+                                    warn!("try to check if error persists {}", id);
                                     let mut tx_object = tx_object.clone();
                                     if let Some(nonce) = self.pending_nonce(source_address) {
                                         tx_object.nonce = Some(nonce);
@@ -382,16 +383,16 @@ impl TestClient {
                                                 }
                                             }
                                             Err(e) => {
-                                                println!("Failed to send tx {:?}, continue to trying", e);
+                                                error!("Failed to send tx {:?}, continue to trying", e);
                                             }
                                         }
                                     } else {
-                                        println!("Failed to sign tx, nothing we can do...")
+                                        error!("Failed to sign tx, nothing we can do...")
                                     }
                                     std::thread::sleep(Duration::from_secs(3));
                                 }
                                 if !skip {
-                                    println!("retry for error {:?}", e);
+                                    error!("retry for error {:?}", e);
                                     metric.status = 97;
                                     let wait_time = 2u64;
                                     last_err_cnt.borrow_mut().add_assign(1);
@@ -407,7 +408,7 @@ impl TestClient {
                                         match self.rt.block_on(self.eth.send_raw_transaction(signed.raw_transaction)) {
                                             Ok(hash) => {
                                                 metric.hash = Some(hash);
-                                                println!(
+                                                warn!(
                                                     "retry {}/{} {:?} {:?} {}",
                                                     idx + 1,
                                                     total,
@@ -419,7 +420,7 @@ impl TestClient {
                                                 nonce.borrow_mut().add_assign(U256::one());
                                             }
                                             Err(e) => {
-                                                println!(
+                                                error!(
                                                     "give up send {}/{} {:?} {} {:?}",
                                                     idx + 1,
                                                     total,
@@ -432,7 +433,7 @@ impl TestClient {
                                             }
                                         }
                                     } else {
-                                        println!(
+                                        error!(
                                             "give up retry sign {}/{} {:?} {} {:?}",
                                             idx + 1,
                                             total,
@@ -447,7 +448,7 @@ impl TestClient {
                         }
                     }
                     Err(e) => {
-                        println!("give up sign {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
+                        error!("give up sign {}/{} {:?} {:?}", idx + 1, total, metric.to, e);
                         metric.status = 98;
                         // retrieve nonce if failed to send tx
                         *nonce.borrow_mut() = self.pending_nonce(source_address).unwrap();
@@ -466,7 +467,7 @@ impl TestClient {
             });
         }
 
-        println!("Waiting for final results...");
+        info!("Waiting for final results...");
 
         results.iter_mut().enumerate().for_each(|(idx, metric)| {
             let mut retry = wait_time;
@@ -501,7 +502,7 @@ impl TestClient {
             );
         });
 
-        println!("Tx succeeded: {}/{}", succeed, total);
+        info!("Tx succeeded: {}/{}", succeed, total);
 
         Ok(TransferMetrics {
             from: source_address,

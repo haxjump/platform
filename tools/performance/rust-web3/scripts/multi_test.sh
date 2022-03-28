@@ -2,12 +2,6 @@
 
 set -e
 
-endpoint="https://dev-qa01.dev.findora.org"
-port=26657
-
-script_dir=$(dirname "$0")
-. "$script_dir"/common.sh
-
 test_endpoint="http://dev-qa01-us-west-2-full-000-open.dev.findora.org:8545"
 
 cd "$script_dir"/..

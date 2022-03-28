@@ -56,7 +56,7 @@ cargo run --release -- info --network qa01 --account 0x512a4d5e8478D11682925b297
 # show current block information
 cargo run --release -- block --network qa01
 # 11297,1646890818,0,16
-# Show blocks since specified height
+# Show evm blocks since specified height
 cargo run --release -- block --network qa01 --start 11290
 # 11290,1646890708,0,16
 # 11291,1646890724,0,16
@@ -67,3 +67,5 @@ cargo run --release -- block --network qa01 --start 11290
 # 11296,1646890802,0,15
 # 11297,1646890818,0,16
 # 11298,1646890834,0,16
+# Show tendermint blocks of qa01 since specified height, used this command if you cares about all not just evm txns
+bash fetch_block.sh 11290
