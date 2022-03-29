@@ -6,7 +6,7 @@ set -e
 cargo build --release
 
 # Save the faucet private key to `.secret`
-echo "4c10030f9fc32db7bbf15e8b527823a4083ab36d7b525b98e6a3f01d875960cc" > .secret
+echo "4c10030f9fc32db7bbf15e8b527823a4083ab36d7b525b98e6a3f01d875960cc" >.secret
 
 # Generate some accounts and transfer some Ethers (for example 1000*0.1 ether) to them
 cargo run --release -- fund --network qa01 --count 100 --amount 1000

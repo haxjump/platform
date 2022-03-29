@@ -15,24 +15,22 @@ latest_height=$(curl -s "$endpoint:$port/status" | jq -r .result.sync_info.lates
 
 height=$start
 if ((start == 0)); then
-  last=0;
+  last=0
 else
-  last_height=$((start-1))
+  last_height=$((start - 1))
   if ! last=$(block_timestamp $last_height); then
     echo "Cannot obtain last block $last_height, latest height $latest_height"
     exit 1
   fi
 fi
 
-while :
-do
+while :; do
   block=$(fetch_block "$height" "$last")
   last=$(echo "$block" | awk -F',' '{print $2}')
   echo "$block"
 
-  ((height+=1))
-  if ((height >= latest_height || (count != 0 && height >= start+count)))
-  then
+  ((height += 1))
+  if ((height >= latest_height || (count != 0 && height >= start + count))); then
     break
   fi
 done

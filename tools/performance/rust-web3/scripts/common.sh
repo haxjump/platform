@@ -36,3 +36,9 @@ latest_block() {
   block=$(curl -s -X GET "$endpoint:$port/block" -H "accept: application/json")
   check_error "$block" || return 1
 }
+
+line_of() {
+  file=$1
+  wc -l "$file" |awk '{print $1}'
+}
+

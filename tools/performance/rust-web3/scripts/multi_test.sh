@@ -34,24 +34,24 @@ cd "$script_dir"/..
 #echo "wait for 60 seconds to make sure all previous txns have been finished..." >> test.log
 #sleep 60
 
-./feth --network "$test_endpoint" --count 1000 --max-parallelism 45 --timeout 100 >> test.log 2>&1
-echo "wait for 60 seconds to make sure all previous txns have been finished..." >> test.log
+./feth --network "$test_endpoint" --count 1000 --max-parallelism 45 --timeout 100 >>test.log 2>&1
+echo "wait for 60 seconds to make sure all previous txns have been finished..." >>test.log
 sleep 60
 
-./feth --network "$test_endpoint" --count 1000 --max-parallelism 48 --timeout 100 >> test.log 2>&1
-echo "wait for 60 seconds to make sure all previous txns have been finished..." >> test.log
+./feth --network "$test_endpoint" --count 1000 --max-parallelism 48 --timeout 100 >>test.log 2>&1
+echo "wait for 60 seconds to make sure all previous txns have been finished..." >>test.log
 sleep 60
 
-./feth --network "$test_endpoint" --count 1000 --max-parallelism 50 --timeout 100 >> test.log 2>&1
-echo "wait for 60 seconds to make sure all previous txns have been finished..." >> test.log
+./feth --network "$test_endpoint" --count 1000 --max-parallelism 50 --timeout 100 >>test.log 2>&1
+echo "wait for 60 seconds to make sure all previous txns have been finished..." >>test.log
 sleep 60
 
-./feth --network "$test_endpoint" --count 1000 --max-parallelism 52 --timeout 100 >> test.log 2>&1
-echo "wait for 60 seconds to make sure all previous txns have been finished..." >> test.log
+./feth --network "$test_endpoint" --count 1000 --max-parallelism 52 --timeout 100 >>test.log 2>&1
+echo "wait for 60 seconds to make sure all previous txns have been finished..." >>test.log
 sleep 60
 
-./feth --network "$test_endpoint" --count 1000 --max-parallelism 55 --timeout 100 >> test.log 2>&1
-echo "wait for 60 seconds to make sure all previous txns have been finished..." >> test.log
+./feth --network "$test_endpoint" --count 1000 --max-parallelism 55 --timeout 100 >>test.log 2>&1
+echo "wait for 60 seconds to make sure all previous txns have been finished..." >>test.log
 sleep 60
 
 cd -
