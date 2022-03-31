@@ -19,7 +19,7 @@ use {
     },
     ruc::*,
     serde::{self, Deserialize, Serialize},
-    std::collections::HashMap,
+    std::collections::{HashMap, HashSet},
     tendermint::{PrivateKey, PublicKey},
     zei::xfr::{
         asset_record::{open_blind_asset_record, AssetRecordType},
@@ -136,8 +136,60 @@ pub fn gen_transfer_op(
 }
 
 #[allow(missing_docs)]
+pub fn gen_transfer_tx_with_sid(
+    owner_kp: &XfrKeyPair,
+    sid: &TxoSID,
+    targets: &Vec<XfrPublicKey>,
+    amount: u64,
+    seq_id: u64,
+) -> Result<Transaction> {
+    let mut utxos_set = HashSet::new();
+    utxos_set.insert(sid);
+    let target_list = targets.iter().map(|t| (t, amount)).collect();
+
+    let mut builder = TransactionBuilder::from_seq_id(seq_id);
+    let op = gen_transfer_op_x_v1(
+        owner_kp,
+        Some(utxos_set),
+        target_list,
+        None,
+        true,
+        false,
+        false,
+        None,
+    )
+    .c(d!())?;
+    builder.add_operation(op);
+    Ok(builder.take_transaction())
+}
+
+#[allow(missing_docs)]
 pub fn gen_transfer_op_x(
     owner_kp: &XfrKeyPair,
+    target_list: Vec<(&XfrPublicKey, u64)>,
+    token_code: Option<AssetTypeCode>,
+    auto_fee: bool,
+    confidential_am: bool,
+    confidential_ty: bool,
+    balance_type: Option<AssetRecordType>,
+) -> Result<Operation> {
+    gen_transfer_op_x_v1(
+        owner_kp,
+        None,
+        target_list,
+        token_code,
+        auto_fee,
+        confidential_am,
+        confidential_ty,
+        balance_type,
+    )
+    .c(d!())
+}
+
+#[allow(missing_docs)]
+pub fn gen_transfer_op_x_v1(
+    owner_kp: &XfrKeyPair,
+    utxos_set: Option<HashSet<&TxoSID>>,
     mut target_list: Vec<(&XfrPublicKey, u64)>,
     token_code: Option<AssetTypeCode>,
     auto_fee: bool,
@@ -165,6 +217,12 @@ pub fn gen_transfer_op_x(
     let utxos = get_owned_utxos(owner_kp.get_pk_ref()).c(d!())?.into_iter();
 
     for (sid, (utxo, owner_memo)) in utxos {
+        if let Some(utxos_ref) = utxos_set.as_ref() {
+            if !utxos_ref.contains(&sid) {
+                continue;
+            }
+        }
+
         let oar =
             open_blind_asset_record(&utxo.0.record, &owner_memo, owner_kp).c(d!())?;
 
@@ -194,7 +252,7 @@ pub fn gen_transfer_op_x(
     }
 
     if 0 != am || 0 != op_fee {
-        return Err(eg!("insufficient balance"));
+        return Err(eg!("insufficient balance {} {}", am, op_fee));
     }
 
     if auto_fee {
@@ -426,7 +484,8 @@ pub fn get_asset_balance(kp: &XfrKeyPair, asset: Option<AssetTypeCode>) -> Resul
     Ok(balance)
 }
 
-fn get_owned_utxos(
+#[allow(missing_docs)]
+pub fn get_owned_utxos(
     addr: &XfrPublicKey,
 ) -> Result<HashMap<TxoSID, (Utxo, Option<OwnerMemo>)>> {
     let url = format!(
@@ -449,7 +508,8 @@ fn get_owned_utxos(
 }
 
 #[inline(always)]
-fn get_seq_id() -> Result<u64> {
+#[allow(missing_docs)]
+pub fn get_seq_id() -> Result<u64> {
     type Resp = (
         HashOf<Option<StateCommitmentData>>,
         u64,

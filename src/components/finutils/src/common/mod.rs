@@ -550,6 +550,21 @@ pub fn gen_key_and_print() {
     );
 }
 
+#[inline(always)]
+#[allow(missing_docs)]
+pub fn gen_one_pubkey() -> XfrPublicKey {
+    let mnemonic = pnk!(wallet::generate_mnemonic_custom(24, "en"));
+    let kp = pnk!(wallet::restore_keypair_from_mnemonic_default(&mnemonic));
+    kp.pub_key
+}
+
+#[allow(missing_docs)]
+pub fn restore_keypair_from_str(sk_str: &str) -> Result<XfrKeyPair> {
+    serde_json::from_str::<XfrSecretKey>(&format!("\"{}\"", sk_str))
+        .map(|sk| sk.into_keypair())
+        .c(d!("Invalid secret key"))
+}
+
 fn restore_keypair_from_str_with_default(sk_str: Option<&str>) -> Result<XfrKeyPair> {
     if let Some(sk) = sk_str {
         serde_json::from_str::<XfrSecretKey>(&format!("\"{}\"", sk))

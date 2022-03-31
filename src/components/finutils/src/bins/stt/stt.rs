@@ -11,6 +11,7 @@
 
 mod init;
 
+use finutils::common::restore_keypair_from_str;
 use {
     clap::{crate_authors, App, SubCommand},
     finutils::common,
@@ -63,6 +64,12 @@ fn run() -> Result<()> {
         .arg_from_usage("--mainnet")
         .arg_from_usage("-i, --interval=[Interval] 'block interval'")
         .arg_from_usage("-s, --skip-validator 'skip validator initialization'");
+    let subcmd_perf = SubCommand::with_name("perf")
+        .arg_from_usage("-i, --interval=[Interval] 'block interval'")
+        .arg_from_usage("--utxo_list 'show avaliable FRA utxo list'")
+        .arg_from_usage("--seckey=[SecretKey] 'File contains secret key'")
+        .arg_from_usage("--concurrences=[Concurrences] 'Concurrences'")
+        .arg_from_usage("--count=[Count] 'Transfer operations count'");
     let subcmd_test = SubCommand::with_name("test");
     let subcmd_issue = SubCommand::with_name("issue").about("issue FRA on demand");
     let subcmd_delegate = SubCommand::with_name("delegate")
@@ -99,10 +106,29 @@ fn run() -> Result<()> {
         .subcommand(subcmd_claim)
         .subcommand(subcmd_transfer)
         .subcommand(subcmd_show)
+        .subcommand(subcmd_perf)
         .get_matches();
 
     if matches.is_present("version") {
         println!("{}", env!("VERGEN_SHA"));
+    } else if let Some(m) = matches.subcommand_matches("perf") {
+        let concurrences: u64 = m
+            .value_of("concurrences")
+            .expect("missing concurrences")
+            .parse()
+            .expect("concurrences should be a valid integer");
+        let count: u64 = m
+            .value_of("count")
+            .expect("missing count")
+            .parse()
+            .expect("count should be a valid integer");
+        let kp = {
+            let p = m.value_of("seckey").expect("missing seckey file");
+            let sk_str = std::fs::read_to_string(p).expect("failed to read file {}");
+            restore_keypair_from_str(sk_str.trim())
+                .expect("invalid secret key characters")
+        };
+        perf::test(kp, concurrences, count);
     } else if let Some(m) = matches.subcommand_matches("init") {
         let interval = m
             .value_of("interval")
@@ -357,6 +383,78 @@ mod claim {
         })?;
 
         Ok(builder.take_transaction())
+    }
+}
+
+mod perf {
+    use super::*;
+    use finutils::common::*;
+    use ledger::data_model::TxoSID;
+    use rayon::prelude::*;
+
+    fn forge_targets(count: u64) -> Vec<XfrPublicKey> {
+        (0..count).map(|_| gen_one_pubkey()).collect()
+    }
+
+    fn do_basic_check(
+        kp: &XfrKeyPair,
+        concurrency: u64,
+        count: u64,
+    ) -> Result<Vec<TxoSID>> {
+        let utxos = utils::get_owned_utxos(kp.get_pk_ref())
+            .expect("Failed to get utxos")
+            .into_iter()
+            .map(|utxo| utxo.0)
+            .collect::<Vec<_>>();
+        //Todo
+        // filter out utxos which has custom asset or low amount
+        //if utxos.len() < parallelism as usize || parallelism == 0 || count == 0 {
+        if concurrency == 0 || count == 0 {
+            Err(eg!("invalid parameters"))
+        } else {
+            Ok(utxos)
+        }
+    }
+
+    fn forge_transactions(
+        kp: XfrKeyPair,
+        utxos: Vec<TxoSID>,
+        targets: Vec<XfrPublicKey>,
+    ) -> Vec<Transaction> {
+        let seq_id = utils::get_seq_id().unwrap();
+        utxos
+            .iter()
+            .filter_map(|sid| {
+                utils::gen_transfer_tx_with_sid(&kp, sid, &targets, 1u64, seq_id).ok()
+            })
+            .collect()
+    }
+
+    pub fn test(kp: XfrKeyPair, concurrences: u64, count: u64) {
+        //1. load source key -- no need
+        let utxos =
+            do_basic_check(&kp, concurrences, count).expect("invalid parameters");
+        let utxos_len = utxos.len();
+        let targets = forge_targets(count);
+        //2. check if there are enough qualified utxos
+        //3. select utxos to forge txns
+        let txns = forge_transactions(kp, utxos, targets);
+        //4. forge enough txns
+        //5. send txns in parallel
+        println!(
+            "txns count {}/{}, {} operations/txn, max concurrences {}",
+            txns.len(),
+            utxos_len,
+            count,
+            concurrences
+        );
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(concurrences as usize)
+            .build_global()
+            .unwrap();
+        txns.par_iter().for_each(|tx| utils::send_tx(tx).unwrap());
+        //6. wait and check txns result
+        println!("perf::test is called {} {}", txns.len(), count);
     }
 }
 
