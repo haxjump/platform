@@ -162,12 +162,16 @@ pub fn begin_block(
     s: &mut ABCISubmissionServer,
     req: &RequestBeginBlock,
 ) -> ResponseBeginBlock {
+    let header = pnk!(req.header.as_ref());
+    let height = header.height;
+    log::info!(target: "abciapp", "tps,begin_block height {} start of begin_block", height);
     #[cfg(target_os = "linux")]
     {
         // snapshot the last block
         ledger::store::fbnc::flush_data();
         let last_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
         info_omit!(CFG.btmcfg.snapshot(last_height as u64));
+        log::info!(target: "abciapp", "tps,begin_block last_height {} finish snapshot", last_height);
     }
 
     // notify here to make abci-commit safer
@@ -184,7 +188,6 @@ pub fn begin_block(
 
     IN_SAFE_ITV.swap(true, Ordering::Relaxed);
 
-    let header = pnk!(req.header.as_ref());
     TENDERMINT_BLOCK_HEIGHT.swap(header.height, Ordering::Relaxed);
 
     *REQ_BEGIN_BLOCK.lock() = req.clone();
@@ -207,8 +210,10 @@ pub fn begin_block(
     if CFG.checkpoint.disable_evm_block_height < header.height
         && header.height < CFG.checkpoint.enable_frc20_height
     {
+        log::info!(target: "abciapp", "tps,begin_block td_height {} end of begin_block", height);
         ResponseBeginBlock::default()
     } else {
+        log::info!(target: "abciapp", "tps,begin_block td_height {} end of begin_block", height);
         s.account_base_app.write().begin_block(req)
     }
 }
@@ -329,12 +334,12 @@ pub fn end_block(
     s: &mut ABCISubmissionServer,
     req: &RequestEndBlock,
 ) -> ResponseEndBlock {
+    let td_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
+    log::info!(target: "abciapp", "tps,end_block td_height {} start of end_block", td_height);
     let mut resp = ResponseEndBlock::new();
 
     let begin_block_req = REQ_BEGIN_BLOCK.lock();
     let header = pnk!(begin_block_req.header.as_ref());
-
-    let td_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
 
     IN_SAFE_ITV.swap(false, Ordering::Relaxed);
     let mut la = s.la.write();
@@ -375,15 +380,18 @@ pub fn end_block(
         let _ = s.account_base_app.write().end_block(req);
     }
 
+    log::info!(target: "abciapp", "tps,end_block td_height {} end of end_block", td_height);
     resp
 }
 
 pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseCommit {
+    let td_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
+
+    log::info!(target: "abciapp", "tps,commit td_height {} begin of commit", td_height);
     let la = s.la.write();
     let mut state = la.get_committed_state().write();
 
     // will change `struct LedgerStatus`
-    let td_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
     state.set_tendermint_height(td_height as u64);
 
     // cache last block for QueryServer
@@ -396,8 +404,11 @@ pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseComm
         .and_then(|s| fs::write(&path, s).c(d!(path))));
 
     let mut r = ResponseCommit::new();
+    log::info!(target: "abciapp", "tps,commit td_height {} collect commitment data", td_height);
     let la_hash = state.get_state_commitment().0.as_ref().to_vec();
+    log::info!(target: "abciapp", "tps,commit td_height {} begin to write commitment data.", td_height);
     let cs_hash = s.account_base_app.write().commit(req).data;
+    log::info!(target: "abciapp", "tps,commit td_height {} writing commitment data ended.", td_height);
 
     if CFG.checkpoint.disable_evm_block_height < td_height
         && td_height < CFG.checkpoint.enable_frc20_height
@@ -407,6 +418,7 @@ pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseComm
         r.set_data(app_hash("commit", td_height, la_hash, cs_hash));
     }
 
+    log::info!(target: "abciapp", "tps,commit td_height {} end of commit", td_height);
     r
 }
 
