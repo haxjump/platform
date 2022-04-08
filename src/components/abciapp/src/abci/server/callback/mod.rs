@@ -39,9 +39,11 @@ use {
             atomic::{AtomicI64, Ordering},
             Arc,
         },
-        time::Instant,
     },
 };
+
+#[cfg(feature = "perf_tracking")]
+use std::time::Instant;
 
 pub(crate) static TENDERMINT_BLOCK_HEIGHT: AtomicI64 = AtomicI64::new(0);
 
@@ -164,9 +166,13 @@ pub fn begin_block(
     req: &RequestBeginBlock,
 ) -> ResponseBeginBlock {
     let header = pnk!(req.header.as_ref());
-    let height = header.height;
-    let start = Instant::now();
-    log::info!(target: "abciapp", "tps,begin_block,height {},start of begin_block", height);
+    #[cfg(feature = "perf_tracking")]
+    let (start, height) = {
+        let height = header.height;
+        let start = Instant::now();
+        log::info!(target: "abciapp", "tps,begin_block,height {},start of begin_block", height);
+        (start, height)
+    };
     let last_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
     #[cfg(target_os = "linux")]
     {
@@ -174,9 +180,12 @@ pub fn begin_block(
         ledger::store::fbnc::flush_data();
         info_omit!(CFG.btmcfg.snapshot(last_height as u64));
     }
-    let earlier = start;
-    let now = Instant::now();
-    let elapsed_snapshot = now.duration_since(earlier).as_millis();
+    #[cfg(feature = "perf_tracking")]
+    let elapsed_snapshot = {
+        let earlier = start;
+        let now = Instant::now();
+        now.duration_since(earlier).as_millis()
+    };
 
     // notify here to make abci-commit safer
     //
@@ -211,17 +220,20 @@ pub fn begin_block(
         pnk!(la.update_staking_simulator());
     }
 
-    if CFG.checkpoint.disable_evm_block_height < header.height
+    let response = if CFG.checkpoint.disable_evm_block_height < header.height
         && header.height < CFG.checkpoint.enable_frc20_height
+    {
+        ResponseBeginBlock::default()
+    } else {
+        s.account_base_app.write().begin_block(req)
+    };
+
+    #[cfg(feature = "perf_tracking")]
     {
         let elapsed = Instant::now().duration_since(start).as_millis();
         log::info!(target: "abciapp", "tps,begin_block,{},{},td_height {},end of begin_block", elapsed_snapshot, elapsed, height);
-        ResponseBeginBlock::default()
-    } else {
-        let elapsed = Instant::now().duration_since(start).as_millis();
-        log::info!(target: "abciapp", "tps,begin_block,{},{},td_height {},end of begin_block", elapsed_snapshot, elapsed, height);
-        s.account_base_app.write().begin_block(req)
     }
+    response
 }
 
 pub fn deliver_tx(
@@ -341,8 +353,12 @@ pub fn end_block(
     req: &RequestEndBlock,
 ) -> ResponseEndBlock {
     let td_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
-    let start = Instant::now();
-    log::info!(target: "abciapp", "tps,end_block,td_height {},start of end_block", td_height);
+    #[cfg(feature = "perf_tracking")]
+    let start = {
+        let start = Instant::now();
+        log::info!(target: "abciapp", "tps,end_block,td_height {},start of end_block", td_height);
+        start
+    };
     let mut resp = ResponseEndBlock::new();
 
     let begin_block_req = REQ_BEGIN_BLOCK.lock();
@@ -387,16 +403,23 @@ pub fn end_block(
         let _ = s.account_base_app.write().end_block(req);
     }
 
-    let elapsed = Instant::now().duration_since(start).as_millis();
-    log::info!(target: "abciapp", "tps,end_block,{},td_height {},end of end_block", elapsed, td_height);
+    #[cfg(feature = "perf_tracking")]
+    {
+        let elapsed = Instant::now().duration_since(start).as_millis();
+        log::info!(target: "abciapp", "tps,end_block,{},td_height {},end of end_block", elapsed, td_height);
+    }
     resp
 }
 
 pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseCommit {
     let td_height = TENDERMINT_BLOCK_HEIGHT.load(Ordering::Relaxed);
 
-    let start = Instant::now();
-    log::info!(target: "abciapp", "tps,commit,td_height {},begin of commit", td_height);
+    #[cfg(feature = "perf_tracking")]
+    let start = {
+        let start = Instant::now();
+        log::info!(target: "abciapp", "tps,commit,td_height {},begin of commit", td_height);
+        start
+    };
     let la = s.la.write();
     let mut state = la.get_committed_state().write();
 
@@ -415,14 +438,20 @@ pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseComm
     let mut r = ResponseCommit::new();
 
     let la_hash = state.get_state_commitment().0.as_ref().to_vec();
-    let earlier = start;
-    let now = Instant::now();
-    let elapsed_collect = now.duration_since(earlier).as_millis();
+    #[cfg(feature = "perf_tracking")]
+    let (now, elapsed_collect) = {
+        let earlier = start;
+        let now = Instant::now();
+        (now, now.duration_since(earlier).as_millis())
+    };
 
     let cs_hash = s.account_base_app.write().commit(req).data;
-    let earlier = now;
-    let now = Instant::now();
-    let elapsed_write = now.duration_since(earlier).as_millis();
+    #[cfg(feature = "perf_tracking")]
+    let elapsed_write = {
+        let earlier = now;
+        let now = Instant::now();
+        now.duration_since(earlier).as_millis()
+    };
 
     if CFG.checkpoint.disable_evm_block_height < td_height
         && td_height < CFG.checkpoint.enable_frc20_height
@@ -432,10 +461,13 @@ pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseComm
         r.set_data(app_hash("commit", td_height, la_hash, cs_hash));
     }
 
-    let earlier = start;
-    let now = Instant::now();
-    let elapsed = now.duration_since(earlier).as_millis();
-    log::info!(target: "abciapp", "tps,commit,{},{},{},td_height {},end of commit", elapsed_collect, elapsed_write, elapsed, td_height);
+    #[cfg(feature = "perf_tracking")]
+    {
+        let earlier = start;
+        let now = Instant::now();
+        let elapsed = now.duration_since(earlier).as_millis();
+        log::info!(target: "abciapp", "tps,commit,{},{},{},td_height {},end of commit", elapsed_collect, elapsed_write, elapsed, td_height);
+    }
     r
 }
 
