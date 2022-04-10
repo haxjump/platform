@@ -89,7 +89,7 @@ macro_rules! no_transfer_err {
 }
 
 /// Depth of abar merkle tree
-pub const MERKLE_TREE_DEPTH: usize = 40;
+pub const MERKLE_TREE_DEPTH: usize = 20;
 
 /// Definition of a fee operation, as a inner data structure of FeeInputs
 pub struct FeeInput {

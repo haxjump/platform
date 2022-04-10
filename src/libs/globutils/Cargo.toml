@@ -12,9 +12,9 @@ serde_json = "1.0"
 time = "0.1"
 rand = "0.8"
 cryptohash = { path = "../cryptohash" }
-zei = { git = "https://github.com/FindoraNetwork/zei", tag = "v0.1.5a" }
-crypto = { package = "crypto", git = "https://github.com/FindoraNetwork/zei", tag = "v0.1.5a" }
-zeialgebra = { package = "algebra", git = "https://github.com/FindoraNetwork/zei", tag = "v0.1.5a" }
+zei = { git = "https://github.com/FindoraNetwork/zei", tag = "v0.1.6" }
+crypto = { package = "crypto", git = "https://github.com/FindoraNetwork/zei", tag = "v0.1.6" }
+zeialgebra = { package = "algebra", git = "https://github.com/FindoraNetwork/zei", tag = "v0.1.6" }
 hex = "0.4.2"
 
 base64 = "0.10"
