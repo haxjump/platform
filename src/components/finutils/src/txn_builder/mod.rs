@@ -493,8 +493,13 @@ impl TransactionBuilder {
         self
     }
 
-    /// Add an operation to convert a Blind Asset Record to a Anonymous record.
-    #[allow(dead_code)]
+    /// Add an operation to convert a Blind Asset Record to a Anonymous record and return the Randomizer
+    /// # Arguments
+    /// * `auth_key_pair` -  XfrKeyPair of the owner BAR for conversion
+    /// * `abar_pub_key`  -  AXfrPubKey of the receiver ABAR after conversion
+    /// * `txo_sid`       -  TxoSID of the BAR to convert
+    /// * `input_record`  -  OpenAssetRecord of the BAR to convert
+    /// * `enc_key`       -  XPublicKey of OwnerMemo encryption of receiver
     pub fn add_operation_bar_to_abar(
         &mut self,
         auth_key_pair: &XfrKeyPair,
@@ -504,18 +509,11 @@ impl TransactionBuilder {
         enc_key: &XPublicKey,
     ) -> Result<(&mut Self, JubjubScalar)> {
         let mut prng = ChaChaRng::from_entropy();
+
+        // generate params for Bar to Abar conversion
         let user_params = UserParams::eq_committed_vals_params()?;
 
-        /*
-        TODO: charge fee
-        if input_record.get_record_type()
-            == NonConfidentialAmount_NonConfidentialAssetType
-            && input_record.asset_type == ASSET_TYPE_FRA
-        {
-            fee = TX_FEE_MIN;
-        }
-        */
-
+        // generate the BarToAbarBody with the ZKP
         let (body, r) = gen_bar_to_abar_body(
             &mut prng,
             &user_params,
@@ -525,16 +523,22 @@ impl TransactionBuilder {
         )
         .c(d!())?;
 
+        // Create the BarToAbarOps with BarToAbarBody and signature
         let bar_to_abar =
             BarToAbarOps::new(body, auth_key_pair, txo_sid, self.no_replay_token)?;
 
+        // Add the generated operation to the transaction
         let op = Operation::BarToAbar(Box::from(bar_to_abar));
         self.txn.add_operation(op);
         Ok((self, r))
     }
 
     /// Create a new operation to convert from Anonymous record to Blind Asset Record
-    #[allow(dead_code)]
+    /// # Arguments
+    /// * input - ABAR to be converted
+    /// * input_keypair - owner keypair of ABAR to be converted
+    /// * bar_pub_key   - Pubkey of the receiver of the new BAR
+    /// * asset_record_type - The type of confidentiality of new BAR
     pub fn add_operation_abar_to_bar(
         &mut self,
         input: &OpenAnonBlindAssetRecord,
@@ -545,6 +549,7 @@ impl TransactionBuilder {
         let mut prng = ChaChaRng::from_entropy();
         let user_params = UserParams::abar_to_bar_params(MERKLE_TREE_DEPTH)?;
 
+        // Generate note
         let note = gen_abar_to_bar_note(
             &mut prng,
             &user_params,
@@ -555,14 +560,20 @@ impl TransactionBuilder {
         )
         .c(d!())?;
 
+        // Create operation
         let abar_to_bar = AbarToBarOps::new(&note, self.no_replay_token).c(d!())?;
-
         let op = Operation::AbarToBar(Box::from(abar_to_bar));
+
+        // Add operation to transaction
         self.txn.add_operation(op);
         Ok(self)
     }
 
     /// Add an operation to charge fee anonymously for ABAR to BAR transfer
+    /// # Arguments
+    /// * input - input Abar for fee payment
+    /// * output - balance back after payment of fee
+    /// * input_keypair - AXfrKeyPair of the fee payer
     #[allow(dead_code)]
     pub fn add_operation_anon_fee(
         &mut self,
@@ -573,12 +584,16 @@ impl TransactionBuilder {
         let mut prng = ChaChaRng::from_entropy();
         let user_params = UserParams::anon_fee_params(MERKLE_TREE_DEPTH)?;
 
+        // Generate AnonFee note
         let (body, keypairs) =
             gen_anon_fee_body(&mut prng, &user_params, input, output, input_keypair)
                 .c(d!())?;
         let note = AnonFeeNote::generate_note_from_body(body, keypairs).c(d!())?;
+
+        // create Operation
         let inp = AnonFeeOps::new(note.clone(), self.no_replay_token).c(d!())?;
         let op = Operation::AnonymousFee(Box::new(inp));
+
         self.txn.add_operation(op);
         Ok((self, note))
     }
@@ -1400,6 +1415,7 @@ pub struct AnonTransferOperationBuilder {
     note: Option<AXfrNote>,
 
     nonce: NoReplayToken,
+    txn: Transaction,
 }
 
 impl AnonTransferOperationBuilder {
@@ -1418,6 +1434,7 @@ impl AnonTransferOperationBuilder {
             randomizers: Vec::default(),
             note: None,
             nonce: no_replay_token,
+            txn: Transaction::from_seq_id(seq_id),
         }
     }
 
@@ -1451,24 +1468,34 @@ impl AnonTransferOperationBuilder {
         let mut fra_output_sum: u64 = 0;
 
         for input in &self.inputs {
-            if let ASSET_TYPE_FRA = input.get_asset_type() {
+            if ASSET_TYPE_FRA == input.get_asset_type() {
                 fra_input_sum += input.get_amount();
             }
         }
 
         for output in &self.outputs {
-            if let ASSET_TYPE_FRA = output.get_asset_type() {
+            if ASSET_TYPE_FRA == output.get_asset_type() {
                 fra_output_sum += output.get_amount();
             }
+        }
+
+        if fra_output_sum > fra_input_sum {
+            let fra_deficient = fra_output_sum - fra_input_sum;
+            let new_estimated_fee = FEE_CALCULATING_FUNC(
+                self.inputs.len() as u32 + 1,
+                self.outputs.len() as u32 + 1,
+            ) as u64;
+            return new_estimated_fee + fra_deficient;
         }
 
         let fra_excess = fra_input_sum - fra_output_sum;
 
         if estimated_fees > fra_excess {
-            FEE_CALCULATING_FUNC(
+            let new_estimated_fee = FEE_CALCULATING_FUNC(
                 self.inputs.len() as u32 + 1,
                 self.outputs.len() as u32 + 1,
-            ) as u64
+            ) as u64;
+            new_estimated_fee - fra_excess
         } else {
             0u64
         }
@@ -1502,33 +1529,31 @@ impl AnonTransferOperationBuilder {
     /// build generates the anon transfer body with the Zero Knowledge Proof.
     pub fn build(&mut self) -> Result<&mut Self> {
         let mut prng = ChaChaRng::from_entropy();
-        let user_params = UserParams::new(
-            self.inputs.len(),
-            self.outputs.len(),
-            Some(MERKLE_TREE_DEPTH),
-        )?;
 
         let mut sum_input = 0;
         let mut sum_output = 0;
         for input in self.inputs.clone() {
-            if let ASSET_TYPE_FRA = input.get_asset_type() {
+            if ASSET_TYPE_FRA == input.get_asset_type() {
                 sum_input += input.get_amount();
             }
         }
         for output in self.outputs.clone() {
-            if let ASSET_TYPE_FRA = output.get_asset_type() {
+            if ASSET_TYPE_FRA == output.get_asset_type() {
                 sum_output += output.get_amount();
             }
         }
         let fees = FEE_CALCULATING_FUNC(
             self.inputs.len() as u32,
             self.outputs.len() as u32 + 1,
-        );
-        let remainder = sum_input as i64 - sum_output as i64 - fees as i64;
+        ) as u64;
+        if sum_output + fees > sum_input {
+            return Err(eg!("Insufficient FRA balance to pay fees"));
+        }
+        let remainder = sum_input - sum_output - fees;
 
         let rem_from_pubkey = self.from_pubkey.clone().c(d!())?;
         let oabar_money_back = OpenAnonBlindAssetRecordBuilder::new()
-            .amount(remainder as u64)
+            .amount(remainder)
             .asset_type(ASSET_TYPE_FRA)
             .pub_key(self.keypairs[0].pub_key())
             .finalize(&mut prng, &rem_from_pubkey)
@@ -1539,6 +1564,12 @@ impl AnonTransferOperationBuilder {
         let randomizer = oabar_money_back.get_key_rand_factor();
         self.outputs.push(oabar_money_back);
         self.randomizers.push(randomizer);
+
+        let user_params = UserParams::new(
+            self.inputs.len(),
+            self.outputs.len(),
+            Some(MERKLE_TREE_DEPTH),
+        )?;
 
         let (body, diversified_keypairs) = gen_anon_xfr_body(
             &mut prng,
@@ -1568,16 +1599,25 @@ impl AnonTransferOperationBuilder {
         Ok(self)
     }
 
+    /// Add operation to the transaction
+    pub fn build_txn(&mut self) -> Result<&mut Self> {
+        self.txn
+            .add_operation(Operation::TransferAnonAsset(Box::from(
+                AnonTransferOps::new(self.note.as_ref().unwrap().clone(), self.nonce)
+                    .unwrap(),
+            )));
+
+        Ok(self)
+    }
+
     /// transaction method wraps the anon transfer note in an Operation and returns it
-    pub fn transaction(&self) -> Result<Operation> {
+    #[allow(missing_docs)]
+    pub fn serialize_str(&self) -> Result<String> {
         if self.note.is_none() {
             return Err(eg!("Anon transfer not built and signed"));
         }
-
-        Ok(Operation::TransferAnonAsset(Box::from(
-            AnonTransferOps::new(self.note.as_ref().unwrap().clone(), self.nonce)
-                .unwrap(),
-        )))
+        // Unwrap is safe because the underlying transaction is guaranteed to be serializable.
+        serde_json::to_string(&self.txn).c(d!())
     }
 }
 

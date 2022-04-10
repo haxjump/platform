@@ -1048,33 +1048,24 @@ impl LedgerState {
     pub fn get_abar_memo(&self, ax_id: ATxoSID) -> Option<OwnerMemo> {
         let txn_location = self.status.ax_txo_to_txn_location.get(&ax_id).unwrap();
         let authenticated_txn = self.get_transaction(txn_location.0).unwrap();
-        let mut memo: Vec<OwnerMemo> = authenticated_txn
+        let memo: Vec<OwnerMemo> = authenticated_txn
             .finalized_txn
             .txn
             .body
             .operations
             .iter()
-            .filter_map(|o| match o {
-                Operation::BarToAbar(body) => Some(body.note.body.memo.clone()),
-                _ => None,
+            .flat_map(|o| match o {
+                Operation::BarToAbar(body) => vec![body.note.body.memo.clone()],
+                Operation::TransferAnonAsset(body) => {
+                    body.note.body.owner_memos.clone()
+                },
+                Operation::AnonymousFee(body) => {
+                    println!("AnonymousFee {:?}", body.note.body.owner_memo);
+                    vec![body.note.body.owner_memo.clone()]
+                },
+                _ => vec![],
             })
             .collect::<Vec<OwnerMemo>>();
-
-        memo.append(
-            &mut authenticated_txn
-                .finalized_txn
-                .txn
-                .body
-                .operations
-                .iter()
-                .filter_map(|o| match o {
-                    Operation::TransferAnonAsset(body) => {
-                        body.note.body.owner_memos.get(txn_location.1 .0).cloned()
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<OwnerMemo>>(),
-        );
 
         if memo.is_empty() {
             return None;
@@ -1696,20 +1687,25 @@ impl LedgerStatus {
             .c(d!())?;
         }
 
+        // Abar conversion needs abar merkle tree root hash for verification of spent ABAR merkle proof.
+        // This is done here with merkle root available.
         for abar_conv in &txn_effect.abar_conv_inputs {
+            // Abar to Bar conversion is invalid without an anon_fee.
             if txn_effect.anon_fee_bodies.is_empty() {
                 return Err(eg!("Abar to Bar conversion missing anon fee"));
             }
 
+            // Get verifier params
             let node_params = NodeParams::abar_to_bar_params()?;
             let abar_version: usize = abar_conv.proof.get_merkle_root_version();
 
+            // verify zk proof with merkle root
             verify_abar_to_bar_body(
                 &node_params,
                 abar_conv,
                 &self.get_versioned_abar_hash(abar_version as usize).unwrap(),
             )
-            .c(d!())?;
+            .c(d!("Abar to Bar conversion proof verification failed"))?;
         }
 
         Ok(())
