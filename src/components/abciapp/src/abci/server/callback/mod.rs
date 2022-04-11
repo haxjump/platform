@@ -47,6 +47,8 @@ use std::time::Instant;
 
 pub(crate) static TENDERMINT_BLOCK_HEIGHT: AtomicI64 = AtomicI64::new(0);
 
+static mut PROFILER_GUARD: Option<pprof::ProfilerGuard> = None;
+
 lazy_static! {
     // save the request parameters from the begin_block for use in the end_block
     static ref REQ_BEGIN_BLOCK: Arc<Mutex<RequestBeginBlock>> =
@@ -165,6 +167,11 @@ pub fn begin_block(
     s: &mut ABCISubmissionServer,
     req: &RequestBeginBlock,
 ) -> ResponseBeginBlock {
+    unsafe {
+        if PROFILER_GUARD.is_none() {
+            PROFILER_GUARD = Some(pprof::ProfilerGuard::new(100).unwrap());
+        }
+    }
     let header = pnk!(req.header.as_ref());
     #[cfg(feature = "perf_tracking")]
     let (start, height) = {
@@ -467,6 +474,16 @@ pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseComm
         let now = Instant::now();
         let elapsed = now.duration_since(earlier).as_millis();
         log::info!(target: "abciapp", "tps,commit,{},{},{},td_height {},end of commit", elapsed_collect, elapsed_write, elapsed, td_height);
+    }
+    unsafe {
+        if let Some(guard) = PROFILER_GUARD.as_ref() {
+            let report = guard.report().build().unwrap();
+            let file =
+                std::fs::File::create(format!("flamegraph.h{}.svg", td_height)).unwrap();
+            report.flamegraph(file).unwrap();
+            log::info!(target: "abciapp", "write flamegraph.h{}.svg", td_height);
+        }
+        PROFILER_GUARD = None;
     }
     r
 }
