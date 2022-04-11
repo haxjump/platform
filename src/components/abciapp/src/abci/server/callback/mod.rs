@@ -4,6 +4,7 @@
 
 mod utils;
 
+use std::cell::RefCell;
 use {
     crate::{
         abci::{server::ABCISubmissionServer, staking, IN_SAFE_ITV, POOL},
@@ -47,8 +48,6 @@ use std::time::Instant;
 
 pub(crate) static TENDERMINT_BLOCK_HEIGHT: AtomicI64 = AtomicI64::new(0);
 
-static mut PROFILER_GUARD: Option<pprof::ProfilerGuard> = None;
-
 lazy_static! {
     // save the request parameters from the begin_block for use in the end_block
     static ref REQ_BEGIN_BLOCK: Arc<Mutex<RequestBeginBlock>> =
@@ -56,6 +55,9 @@ lazy_static! {
     // avoid on-chain-existing transactions to be stored again
     static ref TX_HISTORY: Arc<RwLock<Mapx<Vec<u8>, bool>>> =
         Arc::new(RwLock::new(new_mapx!("tx_history")));
+
+    static ref PROFILER_GUARD: Mutex<RefCell<Option<(u64, pprof::ProfilerGuard<'static>)>>> = Mutex::new(RefCell::new(None));
+
 }
 
 // #[cfg(feature = "debug_env")]
@@ -167,12 +169,19 @@ pub fn begin_block(
     s: &mut ABCISubmissionServer,
     req: &RequestBeginBlock,
 ) -> ResponseBeginBlock {
-    unsafe {
-        if PROFILER_GUARD.is_none() {
-            PROFILER_GUARD = Some(pprof::ProfilerGuard::new(100).unwrap());
+    let header = pnk!(req.header.as_ref());
+    {
+        let mut guard_locked = PROFILER_GUARD.lock();
+        let guard = guard_locked.get_mut();
+        if guard.is_some() && guard.as_ref().unwrap().0 != header.height as u64 {
+            panic!("something is very wrong!");
+        } else if guard.is_none() {
+            *guard = Some((
+                header.height as u64,
+                pprof::ProfilerGuard::new(100).unwrap(),
+            ));
         }
     }
-    let header = pnk!(req.header.as_ref());
     #[cfg(feature = "perf_tracking")]
     let (start, height) = {
         let height = header.height;
@@ -475,15 +484,17 @@ pub fn commit(s: &mut ABCISubmissionServer, req: &RequestCommit) -> ResponseComm
         let elapsed = now.duration_since(earlier).as_millis();
         log::info!(target: "abciapp", "tps,commit,{},{},{},td_height {},end of commit", elapsed_collect, elapsed_write, elapsed, td_height);
     }
-    unsafe {
-        if let Some(guard) = PROFILER_GUARD.as_ref() {
+    {
+        let mut guard_locked = PROFILER_GUARD.lock();
+        let guard = guard_locked.get_mut();
+        if let Some((_, guard)) = guard.as_ref() {
             let report = guard.report().build().unwrap();
             let file =
                 std::fs::File::create(format!("flamegraph.h{}.svg", td_height)).unwrap();
             report.flamegraph(file).unwrap();
             log::info!(target: "abciapp", "write flamegraph.h{}.svg", td_height);
         }
-        PROFILER_GUARD = None;
+        *guard = None;
     }
     r
 }
