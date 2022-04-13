@@ -38,7 +38,6 @@ use {
         parse_td_validator_keys,
     },
     zei::anon_xfr::{
-        anon_fee::ANON_FEE_MIN,
         keys::{AXfrKeyPair, AXfrPubKey},
         nullifier,
         structs::{AnonBlindAssetRecord, MTLeafInfo, OpenAnonBlindAssetRecordBuilder},
@@ -842,7 +841,6 @@ pub fn convert_abar2bar(
     r: &str,
     dec_key: String,
     to: &XfrPublicKey,
-    fr: &str,
     confidential_am: bool,
     confidential_ty: bool,
 ) -> Result<()> {
@@ -851,7 +849,6 @@ pub fn convert_abar2bar(
         .c(d!("invalid 'from-axfr-secret-key'"))?;
     let from_secret_key =
         wallet::x_secret_key_from_base64(dec_key.as_str()).c(d!("invalid dec_key"))?;
-    let from_public_key = XPublicKey::from(&from_secret_key);
 
     // Get the owned ABAR from pub_key and randomizer
     let r = wallet::randomizer_from_base58(r).c(d!())?;
@@ -894,37 +891,6 @@ pub fn convert_abar2bar(
         ));
     }
 
-    // Create randomized public key for fee & get ABAR
-    let fr = wallet::randomizer_from_base58(fr).c(d!())?;
-    let fee_randomized_key = from.pub_key().randomize(&fr);
-    let fee_axtxo_abar = utils::get_owned_abars(&fee_randomized_key).c(d!())?;
-    // Get Fee OwnerMemo & Merkle Proof
-    let fee_owner_memo = utils::get_abar_memo(&fee_axtxo_abar[0].0).c(d!())?.unwrap();
-    let fee_mt_leaf_info = utils::get_abar_proof(&fee_axtxo_abar[0].0)
-        .c(d!())?
-        .unwrap();
-
-    let fee_oabar = OpenAnonBlindAssetRecordBuilder::from_abar(
-        &fee_axtxo_abar[0].1,
-        fee_owner_memo,
-        &from,
-        &from_secret_key,
-    )
-    .unwrap()
-    .mt_leaf_info(fee_mt_leaf_info)
-    .build()
-    .unwrap();
-
-    let mut prng = ChaChaRng::from_entropy();
-    let out_fee_oabar = OpenAnonBlindAssetRecordBuilder::new()
-        .amount(fee_oabar.get_amount() - ANON_FEE_MIN)
-        .asset_type(fee_oabar.get_asset_type())
-        .pub_key(from.pub_key())
-        .finalize(&mut prng, &from_public_key)
-        .unwrap()
-        .build()
-        .unwrap();
-
     // Create New AssetRecordType for new BAR
     let art = match (confidential_am, confidential_ty) {
         (true, true) => AssetRecordType::ConfidentialAmount_ConfidentialAssetType,
@@ -934,25 +900,9 @@ pub fn convert_abar2bar(
     };
 
     // Build AbarToBar Transaction and submit
-    utils::generate_abar2bar_op(&oabar_in, &fee_oabar, &out_fee_oabar, &from, to, art)
+    utils::generate_abar2bar_op(&oabar_in,  &from, to, art)
         .c(d!())?;
 
-    println!(
-        "\x1b[31;01m Fee Remainder Randomizer: {}\x1b[00m",
-        wallet::randomizer_to_base58(&out_fee_oabar.get_key_rand_factor())
-    );
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open("owned_randomizers")
-        .expect("cannot open randomizers file");
-    std::io::Write::write_all(
-        &mut file,
-        ("\n".to_owned()
-            + &wallet::randomizer_to_base58(&out_fee_oabar.get_key_rand_factor()))
-            .as_bytes(),
-    )
-    .expect("randomizer write failed");
     Ok(())
 }
 

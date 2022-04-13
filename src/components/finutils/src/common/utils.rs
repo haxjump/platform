@@ -14,7 +14,7 @@ use {
         data_model::{
             ATxoSID, AssetType, AssetTypeCode, DefineAsset, Operation,
             StateCommitmentData, Transaction, TransferType, TxoRef, TxoSID, Utxo,
-            ASSET_TYPE_FRA, BLACK_HOLE_PUBKEY, TX_FEE_MIN,
+            ASSET_TYPE_FRA, BLACK_HOLE_PUBKEY, TX_FEE_MIN, BAR_TO_ABAR_TX_FEE_MIN
         },
         staking::{init::get_inital_validators, TendermintAddrRef, FRA_TOTAL_AMOUNT},
     },
@@ -266,12 +266,12 @@ pub fn gen_fee_bar_to_abar(
     owner_kp: &XfrKeyPair,
     avoid_input: TxoSID,
 ) -> Result<Operation> {
-    let mut op_fee: u64 = TX_FEE_MIN;
+    let mut op_fee: u64 = BAR_TO_ABAR_TX_FEE_MIN;
     let mut trans_builder = TransferOperationBuilder::new();
     trans_builder
         .add_output(
             &AssetRecordTemplate::with_no_asset_tracing(
-                TX_FEE_MIN,
+                BAR_TO_ABAR_TX_FEE_MIN,
                 ASSET_TYPE_FRA,
                 AssetRecordType::NonConfidentialAmount_NonConfidentialAssetType,
                 *BLACK_HOLE_PUBKEY,
@@ -751,15 +751,11 @@ pub fn generate_bar2abar_op(
 /// Create AbarToBar transaction with given Open ABAR & Open Bar and submit it to network
 /// # Arguments
 /// * oabar_in      - Abar to convert in open form
-/// * fee_oabar     - Abar to pay anon fee in open form
-/// * out_fee_oabar - Abar to get balance back after paying fee
 /// * from          - AXfrKeyPair of person converting ABAR
 /// * to            - XfrPublicKey of person receiving new BAR
 /// * art           - AssetRecordType of the new BAR
 pub fn generate_abar2bar_op(
     oabar_in: &OpenAnonBlindAssetRecord,
-    fee_oabar: &OpenAnonBlindAssetRecord,
-    out_fee_oabar: &OpenAnonBlindAssetRecord,
     from: &AXfrKeyPair,
     to: &XfrPublicKey,
     art: AssetRecordType,
@@ -768,11 +764,6 @@ pub fn generate_abar2bar_op(
     // create and add AbarToBar Operation
     builder
         .add_operation_abar_to_bar(oabar_in, from, to, art)
-        .c(d!())?;
-
-    // create and add AnonFee Operation
-    builder
-        .add_operation_anon_fee(fee_oabar, out_fee_oabar, from)
         .c(d!())?;
 
     // submit transaction

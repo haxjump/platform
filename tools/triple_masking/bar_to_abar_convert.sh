@@ -35,6 +35,7 @@ target/release/fn setup -O mnemonic-temp.keys -S http://0.0.0.0
 
 echo "BAR Balance:"
 target/release/fn wallet --show
+target/release/fn owned-utxos
 
 set -e
 echo "\n\n\n Bar To Abar Conversion"

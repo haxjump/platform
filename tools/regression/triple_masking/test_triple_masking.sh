@@ -33,7 +33,7 @@ fn convert-bar-to-abar --anon-keys ./$FILE_ANON_KEYS  --txo-sid $TXO_SID
 sleep 20
 
 #Verify
-python $REGRESSION_PATH/evm.py verify-balance --sec-key $BAR_SEC_KEY --amount 839990000
+python $REGRESSION_PATH/evm.py verify-balance --sec-key $BAR_SEC_KEY --amount 839980000
 echo
 
 randomiser1=$(tail -n 1 owned_randomizers)
@@ -67,12 +67,13 @@ echo "\n\n\n Fetch merkle proof for Anon Transfer 2"
 echo "------------------------------------------------------------------------------"
 fn anon-fetch-merkle-proof -a 2
 
+
 #Verify
-python $REGRESSION_PATH/evm.py verify-balance --sec-key $BAR_SEC_KEY --amount 839990000
+python $REGRESSION_PATH/evm.py verify-balance --sec-key $BAR_SEC_KEY --amount 839980000
 echo
 
 fn owned-utxos
-
+RUST_BACKTRACE=full
 echo "\n\n\n Bar To Abar Conversion"
 echo "==============================================================================="
 # convert bar to abar
@@ -81,26 +82,16 @@ sleep 1
 TXO_SID=$(target/release/fn owned-utxos | head -4 | tail -1 |  awk -F ' ' '{print $1}')
 fn convert-bar-to-abar --anon-keys ./$FILE_ANON_KEYS  --txo-sid $TXO_SID
 sleep 5
-
-TXO_SID=$(target/release/fn owned-utxos | head -4 | tail -1 |  awk -F ' ' '{print $1}')
-fn convert-bar-to-abar --anon-keys ./$FILE_ANON_KEYS  --txo-sid $TXO_SID
-sleep 5
-
 #Verify
 python $REGRESSION_PATH/evm.py verify-balance --sec-key $BAR_SEC_KEY --amount 419970000
 echo
 
 tail -n 2 owned_randomizers > randomizer_file
 randomiser=$(awk 'FNR>=1 && FNR<=1' randomizer_file)
-echo "\n\n Owned Abars after Bar to Abar conversion 1"
 sleep 20
 target/release/fn owned-abars -p zQa8j0mGYUXM6JxjWN_pqfOi1lvEyenJYq35OIJNN08= -r $randomiser
-fee_randomiser=$(awk 'FNR>=2 && FNR<=2' randomizer_file)
-echo "\n\n Owned Abars after Bar to Abar conversion 2"
-sleep 20
-target/release/fn owned-abars -p zQa8j0mGYUXM6JxjWN_pqfOi1lvEyenJYq35OIJNN08= -r $fee_randomiser
 
-target/release/fn convert-abar-to-bar --anon-keys ./anon-keys-temp.keys -r $randomiser -F $fee_randomiser --to-wallet-address  fra1ck6mu4fgmh7n3g0y5jm0zjrq6hwgckut9q2tf5fpwhrdgkhgdp9qhla5t5
+target/release/fn convert-abar-to-bar --anon-keys ./anon-keys-temp.keys -r $randomiser --to-wallet-address  fra1ck6mu4fgmh7n3g0y5jm0zjrq6hwgckut9q2tf5fpwhrdgkhgdp9qhla5t5
 sleep 20
 #Verify
 python $REGRESSION_PATH/evm.py verify-balance --sec-key $BAR_SEC_KEY --amount 629980000

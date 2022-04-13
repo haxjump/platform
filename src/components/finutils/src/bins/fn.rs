@@ -470,9 +470,8 @@ fn run() -> Result<()> {
 
         // get the randomizers for abar conversion and anon_fee
         let randomizer = m.value_of("randomizer");
-        let fee_randomizer = m.value_of("fee-randomizer");
 
-        if randomizer.is_none() || fee_randomizer.is_none() {
+        if randomizer.is_none() {
             println!("{}", m.usage());
         } else {
             // Build transaction and submit to network
@@ -481,7 +480,6 @@ fn run() -> Result<()> {
                 randomizer.unwrap(),
                 dec_key,
                 &to,
-                fee_randomizer.unwrap(),
                 m.is_present("confidential-amount"),
                 m.is_present("confidential-type"),
             )
