@@ -28,7 +28,7 @@ tendermint = { git = "https://github.com/FindoraNetwork/tendermint-rs", tag = "v
 indexmap = { version = "1.6.2", features = ["serde"] }
 config = { path = "../components/config" }
 fp-types = { path = "../components/contracts/primitives/types" }
-itertools = "0.8"
+itertools = "0.10"
 ruc = "1.0"
 
 zei = "0.1"
