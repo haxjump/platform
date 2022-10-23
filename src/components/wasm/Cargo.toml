@@ -14,7 +14,7 @@ license = ""
 wasm-opt = false
 
 [dependencies]
-base64 = "0.10"
+base64 = "0.13"
 hex = "0.3.2"
 js-sys = "0.3.27"
 rand_chacha = "0.3"
